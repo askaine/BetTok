@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "799717876937",
+    "project_id": "bettok-b3d99",
+    "storage_bucket": "bettok-b3d99.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:799717876937:android:5d54ed1ce7c5092c6b1918",
+        "android_client_info": {
+          "package_name": "com.company.BetTok"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "799717876937-s3946ihfvu1iidujbv0hfjmduiasdr44.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCD1si1YIpY7XgRJ3nWWLT8eVcVQqrIMDs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "799717876937-s3946ihfvu1iidujbv0hfjmduiasdr44.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
