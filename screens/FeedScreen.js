@@ -6,7 +6,7 @@ import {
   Pressable,Image, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Video, ResizeMode } from 'expo-av';
+import { Video, ResizeMode, Audio } from 'expo-av'; // add Audio to the import
 import { Ionicons } from '@expo/vector-icons';
 import { getApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
@@ -54,22 +54,29 @@ function ResultModal({ visible, type = 'info', title, message, onClose }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
   const videoRef  = useRef(null);
-  const hasLoaded = useRef(false); // ref not state — won't trigger re-renders
+  const hasLoaded = useRef(false);
   const [isPlaying,   setIsPlaying]   = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [fetchingUrl, setFetchingUrl] = useState(false);
 
+  // Fix 1 — unlock audio on iOS (silent switch bypass + speaker routing)
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS:    true,
+      staysActiveInBackground: false,
+      shouldDuckAndroid:       true,
+    });
+  }, []);
+
   const togglePlay = async () => {
     if (!videoRef.current) return;
 
-    // ── Pause ──
     if (isPlaying) {
       await videoRef.current.pauseAsync();
       setIsPlaying(false);
       return;
     }
 
-    // ── First tap only: fetch fresh URL and load imperatively ──
     if (!hasLoaded.current) {
       setFetchingUrl(true);
       try {
@@ -77,10 +84,7 @@ function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
         try {
           const result = await getApi('/videoUrl', { id: videoId });
           if (result?.url) urlToLoad = result.url;
-        } catch (_) {
-          // edge function failed — use whatever is in the DB
-        }
-        // Third arg false = don't auto-play after load
+        } catch (_) {}
         await videoRef.current.loadAsync({ uri: urlToLoad }, {}, false);
         hasLoaded.current = true;
       } catch (e) {
@@ -91,7 +95,6 @@ function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
       setFetchingUrl(false);
     }
 
-    // ── Play (every tap after load) ──
     try {
       await videoRef.current.playAsync();
       setIsPlaying(true);
@@ -105,33 +108,32 @@ function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
     setIsBuffering(status.isBuffering && !status.isPlaying);
     if (status.didJustFinish) {
       setIsPlaying(false);
-      // Seek back to start so tapping play again works
       videoRef.current?.setPositionAsync(0);
     }
   };
 
   return (
     <Pressable style={styles.videoContainer} onPress={togglePlay}>
+      {thumbnail && !isPlaying && !fetchingUrl && (
+        <Image source={{ uri: thumbnail }} style={styles.video} resizeMode="cover" />
+      )}
 
-		{/* 👇 ADD THIS BLOCK (thumbnail) */}
-		{thumbnail && !isPlaying && (
-		  <Image
-			source={{ uri: thumbnail }}
-			style={styles.video}
-			resizeMode="cover"
-		  />
-    )}
+      {/* Fix 2 — use absoluteFillObject so the video actually has dimensions */}
       <Video
-        ref={videoRef}
-        style={[styles.video, { position: 'absolute', top: 0, left: 0 }]}
-        useNativeControls={false}
-        resizeMode={ResizeMode.COVER}
-        isLooping={false}
-        shouldPlay={false}
-        isMuted={false}
-        volume={1.0}
-        onPlaybackStatusUpdate={onPlaybackStatusUpdate}
-      />
+		  ref={videoRef}
+		  style={[
+			StyleSheet.absoluteFillObject,
+			{ opacity: isPlaying ? 1 : 0 },
+		  ]}
+		  useNativeControls={false}
+		  resizeMode={ResizeMode.COVER}
+		  onPlaybackStatusUpdate={onPlaybackStatusUpdate}
+		  progressUpdateIntervalMillis={500}
+		  // 👇 ADD THESE THREE PROPS
+		  volume={1.0}
+		  isMuted={false}
+		  ignoreSilentSwitchType="obey" // Change to "ignore" if you want to bypass the side switch
+		/>
 
       {(fetchingUrl || isBuffering) && (
         <View style={styles.overlayCenter} pointerEvents="none">

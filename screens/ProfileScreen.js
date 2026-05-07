@@ -3,7 +3,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
   ActivityIndicator, SafeAreaView, ScrollView, Modal, Pressable,
-  RefreshControl, Image,
+  RefreshControl, Image, Platform, StatusBar as RNStatusBar 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
@@ -69,7 +69,6 @@ function BetHistoryItem({ bet }) {
   const isLost    = bet.status === 'lost';
   const placedAgo = bet.placed_at ? getTimeAgo(new Date(bet.placed_at)) : '—';
 
-  // The video join comes back as bet.videos (object)
   const video = bet.videos;
   const videoTitle = video?.title || 'Unknown video';
 
@@ -108,7 +107,6 @@ export default function ProfileScreen() {
   const showModal = (opts) => setModal({ visible: true, ...opts });
   const closeModal = () => setModal(m => ({ ...m, visible: false }));
 
-  // Register push notifications on mount
   useEffect(() => {
     registerForPushNotifications();
   }, []);
@@ -125,11 +123,8 @@ export default function ProfileScreen() {
 
       const tokenData = await Notifications.getExpoPushTokenAsync();
       const token = tokenData.data;
-
-      // Save token to backend
       await callApi('/registerPushToken', { token });
     } catch (err) {
-      // Silently fail — notifications are optional
       console.log('Push token error:', err);
     }
   };
@@ -179,28 +174,28 @@ export default function ProfileScreen() {
     ? Math.round(((userData.correct_bets ?? 0) / userData.total_bets) * 100)
     : 0;
 
-  // Split bets into pending and resolved for cleaner display
   const pendingBets  = bets.filter(b => b.status === 'pending' || !b.status);
   const resolvedBets = bets.filter(b => b.status === 'won' || b.status === 'lost');
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* 2. The Header is now outside, and the style handles the padding */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>@{userData.username || 'you'}</Text>
+          {userData.flair ? <Text style={styles.flair}>{userData.flair}</Text> : null}
+        </View>
+        <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
+          <Ionicons name="log-out-outline" size={18} color={COLORS.bg} />
+          <Text style={styles.logoutBtnText}>Logout</Text>
+        </TouchableOpacity>
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={COLORS.accent} />}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.username}>@{userData.username || 'you'}</Text>
-            {userData.flair ? <Text style={styles.flair}>{userData.flair}</Text> : null}
-          </View>
-          <TouchableOpacity onPress={logout}>
-            <Ionicons name="log-out-outline" size={22} color={COLORS.muted} />
-          </TouchableOpacity>
-        </View>
-
         {/* Sparks card */}
         <View style={styles.sparksCard}>
           <View>
@@ -237,7 +232,7 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/* Pending bets */}
+        {/* Active bets */}
         {pendingBets.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>ACTIVE BETS ({pendingBets.length})</Text>
@@ -245,7 +240,7 @@ export default function ProfileScreen() {
           </View>
         )}
 
-        {/* Resolved bets */}
+        {/* History */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>BET HISTORY</Text>
@@ -286,9 +281,41 @@ function getTimeAgo(date) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
   loadingContainer: { flex: 1, backgroundColor: COLORS.bg, justifyContent: 'center', alignItems: 'center' },
-  scroll: { padding: SPACING.md, paddingBottom: 100, gap: SPACING.md },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  username: { color: COLORS.text, fontFamily: FONTS.display, fontSize: 26, letterSpacing: 1 },
+  scroll: { padding: SPACING.md, paddingBottom: 120, gap: SPACING.md },
+  
+  // Header styles matching FeedScreen
+  header: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: SPACING.md, 
+    // This adds extra space ONLY on Android to dodge the status bar icons
+    paddingTop: Platform.OS === 'android' ? RNStatusBar.currentHeight + 10 : 10, 
+    paddingBottom: 15, 
+    borderBottomWidth: 1, 
+    borderBottomColor: COLORS.border 
+  },
+  headerTitle: { 
+    color: COLORS.text, 
+    fontFamily: FONTS.display, 
+    fontSize: 24, 
+    letterSpacing: 1 
+  },
+  logoutBtn: { 
+    backgroundColor: COLORS.accent, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingHorizontal: 12, 
+    paddingVertical: 7, 
+    borderRadius: RADIUS.md, 
+    gap: 4 
+  },
+  logoutBtnText: { 
+    color: COLORS.bg, 
+    fontWeight: '700', 
+    fontSize: 13 
+  },
+
   flair: { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 11, marginTop: 2 },
   sparksCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.md, borderWidth: 1, borderColor: COLORS.border },
   sparksLabel: { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10, letterSpacing: 2 },

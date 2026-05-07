@@ -22,12 +22,24 @@ export function AuthProvider({ children }) {
   }, []);
 
   const register = async (email, password, username) => {
+    // Username format is validated here AND in AuthScreen, keeping both as a safety net.
+    const usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
+    if (!usernameRegex.test(username)) {
+      throw new Error('Username must be 3–20 characters: letters, numbers, and underscores only');
+    }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { data: { username } },
     });
     if (error) throw error;
+
+    // NOTE: The user profile row in public.users is created automatically
+    // by the database trigger handle_new_user() — see supabase_setup.sql.
+    // Do NOT manually insert here; the trigger is atomic and handles
+    // the 1000 Sparks signup bonus.
+
     return data;
   };
 
@@ -46,8 +58,30 @@ export function AuthProvider({ children }) {
     if (error) throw error;
   };
 
+  const resetPassword = async (email) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: 'bettok://reset-password',
+    });
+    if (error) throw error;
+  };
+
+  // Called from the reset-password deep link screen after the user sets a new password.
+  const updatePassword = async (newPassword) => {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) throw error;
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, register, resendVerification }}>
+    <AuthContext.Provider value={{
+      user,
+      loading,
+      login,
+      logout,
+      register,
+      resendVerification,
+      resetPassword,
+      updatePassword,
+    }}>
       {children}
     </AuthContext.Provider>
   );

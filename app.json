@@ -3,6 +3,7 @@
     "name": "BetTok",
     "slug": "bettok",
     "version": "1.0.0",
+	"scheme": "bettok",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,

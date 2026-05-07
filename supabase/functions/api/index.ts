@@ -1,35 +1,46 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_URL        = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // ── Game constants ────────────────────────────────────────
-const VIRALITY_THRESHOLD = 100_000;
-const MIN_LIKES          = 500;
-const MAX_LIKES          = 5_000;
-const MAX_AGE_HOURS      = 168;
-const DAILY_BONUS        = 100;
-const RESOLUTION_DAYS    = 7;
-const SEED_LIQUIDITY     = 300;
-const MIN_ODDS           = 1.05;
-const MAX_ODDS           = 15.0;
+const VIRALITY_THRESHOLD  = 100_000;
+const MIN_LIKES           = 500;
+const MAX_LIKES           = 5_000;
+const MAX_AGE_HOURS       = 168;
+const DAILY_BONUS         = 100;
+const RESOLUTION_DAYS     = 7;
+const SEED_LIQUIDITY      = 300;
+const MIN_ODDS            = 1.05;
+const MAX_ODDS            = 15.0;
+const MAX_BASE_WAGER      = 10_000;  // hard cap per bet
+const MAX_MULTIPLIER      = 10;      // hard cap on multiplier
+const MAX_VIDEOS_PER_DAY  = 5;       // ingestVideo rate limit per user
+
+// Allowed TikTok hostnames for SSRF protection
+const TIKTOK_HOSTNAMES = new Set([
+  "www.tiktok.com",
+  "tiktok.com",
+  "vm.tiktok.com",
+  "vt.tiktok.com",
+]);
 
 // Bracket view-range bands — must match BetScreen.js BRACKET_OPTIONS
 const BRACKET_ODDS: Record<string, number> = {
-  "<100k":    1.5,
+  "<100k":     1.5,
   "100k-500k": 2.5,
-  "500k-1m":  4.0,
-  "1m-5m":    7.0,
-  "5m+":      15.0,
+  "500k-1m":   4.0,
+  "1m-5m":     7.0,
+  "5m+":       15.0,
 };
 
 const TIME_BONUS_TIERS = [
-  { hoursAfterAdded: 1,        bonus: 1.5 },
-  { hoursAfterAdded: 6,        bonus: 1.3 },
+  { hoursAfterAdded: 1,        bonus: 1.5  },
+  { hoursAfterAdded: 6,        bonus: 1.3  },
   { hoursAfterAdded: 24,       bonus: 1.15 },
   { hoursAfterAdded: 72,       bonus: 1.05 },
-  { hoursAfterAdded: Infinity, bonus: 1.0 },
+  { hoursAfterAdded: Infinity, bonus: 1.0  },
 ];
 
 // ── Helpers ───────────────────────────────────────────────
@@ -70,6 +81,24 @@ function extractTikTokVideoId(url: string): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * Validate that a URL is a legitimate TikTok URL.
+ * Returns the cleaned URL string, or null if invalid.
+ */
+function validateTikTokUrl(rawUrl: string): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    // Only allow https
+    if (parsed.protocol !== "https:") return null;
+    // Only allow known TikTok hostnames
+    if (!TIKTOK_HOSTNAMES.has(parsed.hostname)) return null;
+    // Strip tracking query params — return clean URL
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -85,10 +114,13 @@ serve(async (req) => {
     .replace(/^\/api/, "") || "/";
   const authHeader = req.headers.get("Authorization");
 
+  // supabase: verifies the caller's JWT and resolves req user
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     global: { headers: { Authorization: authHeader || "" } },
   });
+  // admin: service-role client for DB writes — always bypasses RLS intentionally
   const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
   const { data: { user } } = await supabase.auth.getUser();
 
   const respond = (data: unknown, status = 200) =>
@@ -108,10 +140,32 @@ serve(async (req) => {
     // ── POST /ingestVideo ─────────────────────────────────
     if (path === "/ingestVideo" && req.method === "POST") {
       const authErr = requireAuth(); if (authErr) return authErr;
-      const { tiktokUrl } = body;
 
-      // Strip tracking params from URL
-      const cleanUrl = tiktokUrl.split("?")[0];
+      const { tiktokUrl } = body;
+      if (!tiktokUrl || typeof tiktokUrl !== "string") {
+        return respond({ error: "tiktokUrl is required" }, 400);
+      }
+
+      // SSRF protection: validate the URL is actually a TikTok URL
+      const cleanUrl = validateTikTokUrl(tiktokUrl);
+      if (!cleanUrl) {
+        return respond({ error: "Invalid TikTok URL" }, 400);
+      }
+
+      // Rate limit: max MAX_VIDEOS_PER_DAY submissions per user per 24 hours
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { count: submissionCount } = await admin
+        .from("videos")
+        .select("id", { count: "exact", head: true })
+        .eq("added_by_uid", user!.id)
+        .gte("created_at", oneDayAgo);
+
+      if ((submissionCount ?? 0) >= MAX_VIDEOS_PER_DAY) {
+        return respond({
+          accepted: false,
+          reason: `Daily submission limit reached (${MAX_VIDEOS_PER_DAY} videos per day)`,
+        });
+      }
 
       const videoId = extractTikTokVideoId(cleanUrl);
       if (videoId) {
@@ -160,7 +214,7 @@ serve(async (req) => {
         no_pool:             0,
       }).select().single();
 
-      if (error) return respond({ error: error.message }, 500);
+      if (error) return respond({ error: "Failed to save video" }, 500);
 
       await admin.from("resolution_queue").insert({
         video_id:       video.id,
@@ -181,41 +235,75 @@ serve(async (req) => {
 
       const { betType = "binary", videoId, side, bracket, legs, multiplier, baseWager } = body;
 
+      // ── Input validation ──────────────────────────────
+      const parsedBaseWager  = Number(baseWager);
+      const parsedMultiplier = Number(multiplier ?? 1);
+
+      if (
+        !Number.isInteger(parsedBaseWager) ||
+        parsedBaseWager < 1 ||
+        parsedBaseWager > MAX_BASE_WAGER
+      ) {
+        return respond({ error: `baseWager must be a whole number between 1 and ${MAX_BASE_WAGER}` }, 400);
+      }
+      if (
+        !Number.isFinite(parsedMultiplier) ||
+        parsedMultiplier < 1 ||
+        parsedMultiplier > MAX_MULTIPLIER
+      ) {
+        return respond({ error: `multiplier must be between 1 and ${MAX_MULTIPLIER}` }, 400);
+      }
+
       // Actual sparks at risk = base wager × multiplier
-      const sparksWagered = Math.floor((baseWager || 100) * (multiplier || 1));
-
-      const { data: userData } = await admin.from("users").select("*").eq("id", user!.id).single();
-      if (!userData) return respond({ error: "Not found" }, 404);
-      if (userData.sparks < sparksWagered) return respond({ error: "Not enough Sparks" }, 400);
-
+      const sparksWagered = Math.floor(parsedBaseWager * parsedMultiplier);
       const now = new Date();
 
       // ─────────────────────────────────────────────────────
       // BINARY BET
       // ─────────────────────────────────────────────────────
       if (betType === "binary") {
-        if (!side) return respond({ error: "side is required for binary bets" }, 400);
+        if (!side || !["yes", "no"].includes(side)) {
+          return respond({ error: "side must be 'yes' or 'no' for binary bets" }, 400);
+        }
+        if (!videoId) return respond({ error: "videoId is required" }, 400);
 
         const { data: videoData } = await admin.from("videos").select("*").eq("id", videoId).single();
         if (!videoData) return respond({ error: "Video not found" }, 404);
         if (videoData.status !== "active") return respond({ error: "This video has already been resolved" }, 400);
 
         const { data: existingBet } = await admin
-          .from("bets").select("id").eq("uid", user!.id).eq("video_id", videoId).eq("bet_type", "binary").maybeSingle();
+          .from("bets").select("id")
+          .eq("uid", user!.id).eq("video_id", videoId).eq("bet_type", "binary")
+          .maybeSingle();
         if (existingBet) return respond({ error: "You've already placed a bet on this video!" }, 400);
 
-        const oddsAtBet    = calculateOdds(videoData.yes_pool || 0, videoData.no_pool || 0, side);
-        const addedAt      = videoData.added_at || videoData.created_at;
-        const timeBonus    = getTimeBonus(addedAt, now);
+        const oddsAtBet       = calculateOdds(videoData.yes_pool || 0, videoData.no_pool || 0, side);
+        const addedAt         = videoData.added_at || videoData.created_at;
+        const timeBonus       = getTimeBonus(addedAt, now);
         const potentialPayout = Math.floor(sparksWagered * oddsAtBet * timeBonus);
 
+        // ── Atomic sparks deduction via RPC ──────────────
+        // The deduct_sparks() function checks balance and deducts in a single
+        // statement, preventing race conditions and negative balances.
+        const { error: deductErr } = await admin.rpc("deduct_sparks", {
+          p_user_id: user!.id,
+          p_amount:  sparksWagered,
+        });
+        if (deductErr) {
+          if (deductErr.message.includes("INSUFFICIENT_SPARKS")) {
+            return respond({ error: "Not enough Sparks" }, 400);
+          }
+          return respond({ error: "Failed to place bet" }, 500);
+        }
+
+        // Insert bet record; if this fails, refund the sparks
         const { error: betErr } = await admin.from("bets").insert({
           uid:              user!.id,
           video_id:         videoId,
           bet_type:         "binary",
           side,
-          multiplier,
-          base_wager:       baseWager,
+          multiplier:       parsedMultiplier,
+          base_wager:       parsedBaseWager,
           sparks_wagered:   sparksWagered,
           odds_at_bet:      oddsAtBet,
           time_bonus:       timeBonus,
@@ -225,14 +313,10 @@ serve(async (req) => {
         });
 
         if (betErr) {
+          await admin.rpc("refund_sparks", { p_user_id: user!.id, p_amount: sparksWagered });
           if (betErr.code === "23505") return respond({ error: "You've already placed a bet on this video!" }, 400);
-          return respond({ error: betErr.message }, 500);
+          return respond({ error: "Failed to save bet" }, 500);
         }
-
-        await admin.from("users").update({
-          sparks:     userData.sparks - sparksWagered,
-          total_bets: (userData.total_bets || 0) + 1,
-        }).eq("id", user!.id);
 
         const newYesPool = side === "yes" ? (videoData.yes_pool || 0) + sparksWagered : (videoData.yes_pool || 0);
         const newNoPool  = side === "no"  ? (videoData.no_pool  || 0) + sparksWagered : (videoData.no_pool  || 0);
@@ -263,29 +347,43 @@ serve(async (req) => {
         if (!bracket || !BRACKET_ODDS[bracket]) {
           return respond({ error: "Invalid bracket selection" }, 400);
         }
+        if (!videoId) return respond({ error: "videoId is required" }, 400);
 
         const { data: videoData } = await admin.from("videos").select("*").eq("id", videoId).single();
         if (!videoData) return respond({ error: "Video not found" }, 404);
         if (videoData.status !== "active") return respond({ error: "This video has already been resolved" }, 400);
 
-        // One bracket bet per video per user
         const { data: existingBet } = await admin
-          .from("bets").select("id").eq("uid", user!.id).eq("video_id", videoId).eq("bet_type", "bracket").maybeSingle();
+          .from("bets").select("id")
+          .eq("uid", user!.id).eq("video_id", videoId).eq("bet_type", "bracket")
+          .maybeSingle();
         if (existingBet) return respond({ error: "You've already placed a bracket bet on this video!" }, 400);
 
-        const bracketOdds  = BRACKET_ODDS[bracket];
-        const addedAt      = videoData.added_at || videoData.created_at;
-        const timeBonus    = getTimeBonus(addedAt, now);
+        const bracketOdds    = BRACKET_ODDS[bracket];
+        const addedAt        = videoData.added_at || videoData.created_at;
+        const timeBonus      = getTimeBonus(addedAt, now);
         const potentialPayout = Math.floor(sparksWagered * bracketOdds * timeBonus);
+
+        // Atomic deduction
+        const { error: deductErr } = await admin.rpc("deduct_sparks", {
+          p_user_id: user!.id,
+          p_amount:  sparksWagered,
+        });
+        if (deductErr) {
+          if (deductErr.message.includes("INSUFFICIENT_SPARKS")) {
+            return respond({ error: "Not enough Sparks" }, 400);
+          }
+          return respond({ error: "Failed to place bet" }, 500);
+        }
 
         const { error: betErr } = await admin.from("bets").insert({
           uid:              user!.id,
           video_id:         videoId,
           bet_type:         "bracket",
-          side:             "bracket",   // non-null placeholder
+          side:             "bracket",
           bracket,
-          multiplier,
-          base_wager:       baseWager,
+          multiplier:       parsedMultiplier,
+          base_wager:       parsedBaseWager,
           sparks_wagered:   sparksWagered,
           odds_at_bet:      bracketOdds,
           time_bonus:       timeBonus,
@@ -295,14 +393,10 @@ serve(async (req) => {
         });
 
         if (betErr) {
+          await admin.rpc("refund_sparks", { p_user_id: user!.id, p_amount: sparksWagered });
           if (betErr.code === "23505") return respond({ error: "You've already placed a bracket bet on this video!" }, 400);
-          return respond({ error: betErr.message }, 500);
+          return respond({ error: "Failed to save bet" }, 500);
         }
-
-        await admin.from("users").update({
-          sparks:     userData.sparks - sparksWagered,
-          total_bets: (userData.total_bets || 0) + 1,
-        }).eq("id", user!.id);
 
         const newTotal = (videoData.total_bets || 0) + 1;
         await admin.from("videos").update({
@@ -325,7 +419,6 @@ serve(async (req) => {
           return respond({ error: "Maximum 3 legs per parlay" }, 400);
         }
 
-        // Validate all videos exist and are active
         const videoIds = legs.map((l: { videoId: string }) => l.videoId);
         const { data: videosData } = await admin
           .from("videos").select("*").in("id", videoIds);
@@ -339,27 +432,37 @@ serve(async (req) => {
           return respond({ error: "One or more videos have already been resolved" }, 400);
         }
 
-        // Calculate combined parlay odds
         const parlayOdds = legs.reduce((acc: number, leg: { videoId: string; side: string }) => {
           const v = videosData.find(vd => vd.id === leg.videoId)!;
           const legOdds = calculateOdds(v.yes_pool || 0, v.no_pool || 0, leg.side as "yes" | "no");
           return acc * legOdds;
         }, 1.0);
 
-        const primaryVideoId = legs[0].videoId;
-        const addedAt        = videosData.find(v => v.id === primaryVideoId)?.added_at || now.toISOString();
-        const timeBonus      = getTimeBonus(addedAt, now);
+        const primaryVideoId  = legs[0].videoId;
+        const addedAt         = videosData.find(v => v.id === primaryVideoId)?.added_at || now.toISOString();
+        const timeBonus       = getTimeBonus(addedAt, now);
         const potentialPayout = Math.floor(sparksWagered * parlayOdds * timeBonus);
 
-        // Insert one bet row for the parlay (primary video as FK, legs stored as JSON)
+        // Atomic deduction
+        const { error: deductErr } = await admin.rpc("deduct_sparks", {
+          p_user_id: user!.id,
+          p_amount:  sparksWagered,
+        });
+        if (deductErr) {
+          if (deductErr.message.includes("INSUFFICIENT_SPARKS")) {
+            return respond({ error: "Not enough Sparks" }, 400);
+          }
+          return respond({ error: "Failed to place bet" }, 500);
+        }
+
         const { error: betErr } = await admin.from("bets").insert({
           uid:              user!.id,
           video_id:         primaryVideoId,
           bet_type:         "parlay",
-          side:             "parlay",    // non-null placeholder
-          parlay_legs:      legs,        // JSON array of { videoId, side }
-          multiplier,
-          base_wager:       baseWager,
+          side:             "parlay",
+          parlay_legs:      legs,
+          multiplier:       parsedMultiplier,
+          base_wager:       parsedBaseWager,
           sparks_wagered:   sparksWagered,
           odds_at_bet:      +parlayOdds.toFixed(3),
           time_bonus:       timeBonus,
@@ -369,13 +472,9 @@ serve(async (req) => {
         });
 
         if (betErr) {
-          return respond({ error: betErr.message }, 500);
+          await admin.rpc("refund_sparks", { p_user_id: user!.id, p_amount: sparksWagered });
+          return respond({ error: "Failed to save bet" }, 500);
         }
-
-        await admin.from("users").update({
-          sparks:     userData.sparks - sparksWagered,
-          total_bets: (userData.total_bets || 0) + 1,
-        }).eq("id", user!.id);
 
         // Update total_bets count on each leg's video
         for (const leg of legs as { videoId: string; side: string }[]) {
@@ -397,36 +496,37 @@ serve(async (req) => {
     if (path === "/claimDailyBonus" && req.method === "POST") {
       const authErr = requireAuth(); if (authErr) return authErr;
 
-      const { data: userData } = await admin.from("users").select("*").eq("id", user!.id).single();
-      if (!userData) return respond({ error: "User not found" }, 404);
+      // The try_claim_daily_bonus() RPC does the 24-hour check and the
+      // balance increment atomically, preventing double-claim race conditions.
+      const { data: rpcResult, error: rpcErr } = await admin.rpc("try_claim_daily_bonus", {
+        p_user_id:    user!.id,
+        p_bonus:      DAILY_BONUS,
+      });
 
-      const now       = new Date();
-      const lastClaim = userData.last_daily_bonus ? new Date(userData.last_daily_bonus) : null;
-
-      if (lastClaim) {
-        const hoursSince = (now.getTime() - lastClaim.getTime()) / (1000 * 60 * 60);
-        if (hoursSince < 24) {
-          const nextClaim    = new Date(lastClaim.getTime() + 24 * 60 * 60 * 1000);
-          const minutesUntil = Math.ceil((nextClaim.getTime() - now.getTime()) / (1000 * 60));
-          const hoursUntil   = Math.floor(minutesUntil / 60);
-          const timeStr      = hoursUntil >= 1 ? `${hoursUntil}h ${minutesUntil % 60}m` : `${minutesUntil}m`;
+      if (rpcErr) {
+        if (rpcErr.message.includes("COOLDOWN:")) {
+          // Parse remaining seconds from the error message
+          const secondsStr = rpcErr.message.split("COOLDOWN:")[1]?.trim();
+          const seconds    = parseInt(secondsStr || "0", 10);
+          const hours      = Math.floor(seconds / 3600);
+          const minutes    = Math.ceil((seconds % 3600) / 60);
+          const timeStr    = hours >= 1 ? `${hours}h ${minutes}m` : `${minutes}m`;
           return respond({ error: `Come back in ${timeStr} for your next bonus` }, 400);
         }
+        if (rpcErr.message.includes("USER_NOT_FOUND")) {
+          return respond({ error: "User not found" }, 404);
+        }
+        return respond({ error: "Failed to claim bonus" }, 500);
       }
 
-      const newBalance = (userData.sparks || 0) + DAILY_BONUS;
-      await admin.from("users")
-        .update({ sparks: newBalance, last_daily_bonus: now.toISOString() })
-        .eq("id", user!.id);
-
-      return respond({ awarded: DAILY_BONUS, newBalance });
+      return respond({ awarded: DAILY_BONUS, newBalance: rpcResult.new_balance });
     }
 
     // ── POST /registerPushToken ───────────────────────────
     if (path === "/registerPushToken" && req.method === "POST") {
       const authErr = requireAuth(); if (authErr) return authErr;
       const { token } = body;
-      if (!token) return respond({ error: "token required" }, 400);
+      if (!token || typeof token !== "string") return respond({ error: "token required" }, 400);
       await admin.from("users").update({ push_token: token }).eq("id", user!.id);
       return respond({ ok: true });
     }
@@ -491,6 +591,7 @@ serve(async (req) => {
     if (path === "/profile") {
       const authErr = requireAuth(); if (authErr) return authErr;
       const { data } = await admin.from("users").select("*").eq("id", user!.id).single();
+      if (!data) return respond({ error: "Profile not found" }, 404);
       return respond({ user: data });
     }
 
@@ -503,13 +604,14 @@ serve(async (req) => {
         .eq("uid", user!.id)
         .order("placed_at", { ascending: false })
         .limit(50);
-      if (error) return respond({ error: error.message }, 500);
+      if (error) return respond({ error: "Failed to fetch bets" }, 500);
       return respond({ bets: data || [] });
     }
 
     // ── GET /leaderboard ──────────────────────────────────
     if (path === "/leaderboard") {
       const type  = url.searchParams.get("type") || "weekly";
+      // Whitelist the table name to prevent injection
       const table = type === "weekly" ? "leaderboard_weekly" : "leaderboard_alltime";
       const { data } = await admin.from(table).select("entries").limit(1).maybeSingle();
       return respond({ entries: data?.entries || [] });
@@ -556,8 +658,10 @@ serve(async (req) => {
     }
 
     return respond({ error: "Not found" }, 404);
+
   } catch (err) {
-    console.error("API error:", err);
-    return respond({ error: (err as Error).message }, 500);
+    // Log the real error server-side but NEVER expose raw internal details to the client
+    console.error("Unhandled API error:", err);
+    return respond({ error: "An internal error occurred" }, 500);
   }
 });

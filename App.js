@@ -1,5 +1,6 @@
 // App.js — Root navigator
 import React from 'react';
+import * as Linking from 'expo-linking';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -19,10 +20,12 @@ import BetScreen from './screens/BetScreen';
 import AuthScreen from './screens/AuthScreen';
 import ResultsScreen from './screens/Resultsscreen';
 import ShopScreen from './screens/Shopscreen';
+import ResetPasswordScreen from './screens/ResetPasswordScreen';
 
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
+
 
 function MainTabs() {
   return (
@@ -68,7 +71,10 @@ function RootNavigator() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       {!user ? (
-        <Stack.Screen name="Auth" component={AuthScreen} />
+        <>
+          <Stack.Screen name="Auth" component={AuthScreen} />
+          <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
+        </>
       ) : (
         <>
           <Stack.Screen name="Main" component={MainTabs} />
@@ -81,11 +87,26 @@ function RootNavigator() {
   );
 }
 
+const linking = {
+  prefixes: [Linking.createURL('/'), 'bettok://'],
+  config: {
+    screens: {
+      ResetPassword: 'reset-password',
+      Main: {
+        screens: {
+          Feed: 'feed',
+        }
+      }
+    },
+  },
+};
+
+
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
-        <NavigationContainer>
+        <NavigationContainer linking={linking}>
           <StatusBar style="light" />
           <RootNavigator />
         </NavigationContainer>
