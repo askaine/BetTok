@@ -5,7 +5,7 @@ const SUPABASE_URL        = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 // ── Game constants ────────────────────────────────────────
-const VIRALITY_THRESHOLD  = 100_000;
+const VIRALITY_THRESHOLD  = 50_000;
 const MIN_LIKES           = 500;
 const MAX_LIKES           = 5_000;
 const MAX_AGE_HOURS       = 168;
@@ -103,6 +103,142 @@ const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+const RESOLVE_SECRET = Deno.env.get("RESOLVE_SECRET") || "change-this-secret";
+ 
+async function fetchCurrentViews(tiktokUrl: string): Promise<number | null> {
+  try {
+    const res  = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(tiktokUrl)}`);
+    const json = await res.json();
+    return json?.data?.play_count ?? null;
+  } catch { return null; }
+}
+ 
+async function sendPush(token: string, title: string, body: string) {
+  try {
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: token, sound: "default", title, body }),
+    });
+  } catch {}
+}
+ 
+function checkBracketWin(bet: Record<string, unknown>, currentViews: number, isViral: boolean): boolean {
+  if (bet.bet_type === "binary") return bet.side === (isViral ? "yes" : "no");
+  if (bet.bet_type === "bracket") {
+    const b = bet.bracket as string;
+    if (b === "<100k")     return currentViews < 100_000;
+    if (b === "100k-500k") return currentViews >= 100_000 && currentViews < 500_000;
+    if (b === "500k-1m")   return currentViews >= 500_000 && currentViews < 1_000_000;
+    if (b === "1m-5m")     return currentViews >= 1_000_000 && currentViews < 5_000_000;
+    if (b === "5m+")       return currentViews >= 5_000_000;
+  }
+  if (bet.bet_type === "parlay") {
+    const legs = (bet.parlay_legs as { side: string }[]) || [];
+    return legs[0]?.side === (isViral ? "yes" : "no");
+  }
+  return false;
+}
+ 
+async function runResolutionPass(adminClient: ReturnType<typeof createClient>): Promise<number> {
+  const now = new Date();
+  let resolved = 0;
+ 
+  // Find all active videos past their deadline OR already viral
+  const { data: candidates } = await adminClient
+    .from("videos")
+    .select("*")
+    .eq("status", "active")
+    .or(`resolution_deadline.lt.${now.toISOString()},current_views.gte.50000`);
+ 
+  for (const video of (candidates || [])) {
+    const freshViews   = await fetchCurrentViews(video.tiktok_url);
+    const currentViews = freshViews ?? (video.current_views || 0);
+ 
+    if (freshViews !== null) {
+      await adminClient.from("videos").update({ current_views: freshViews }).eq("id", video.id);
+    }
+ 
+    const isViral = currentViews >= 50_000;
+    const isPastDeadline = new Date(video.resolution_deadline) <= now;
+ 
+    // Only resolve if deadline passed OR already viral
+    if (!isViral && !isPastDeadline) continue;
+ 
+    const resolution = isViral ? "resolved_yes" : "resolved_no";
+ 
+    await adminClient.from("videos").update({
+      status:       resolution,
+      resolved_at:  now.toISOString(),
+      current_views: currentViews,
+    }).eq("id", video.id);
+ 
+    // Settle all pending bets
+    const { data: bets } = await adminClient
+      .from("bets").select("*").eq("video_id", video.id).eq("status", "pending");
+ 
+    for (const bet of (bets || [])) {
+      const won          = checkBracketWin(bet, currentViews, isViral);
+      const sparksEarned = won ? (bet.potential_payout || 0) : 0;
+ 
+      await adminClient.from("bets").update({
+        status:        won ? "won" : "lost",
+        settled_at:    now.toISOString(),
+        sparks_earned: sparksEarned,
+      }).eq("id", bet.id);
+ 
+      const { data: userData } = await adminClient.from("users").select("*").eq("id", bet.uid).single();
+      if (!userData) continue;
+ 
+      const updates: Record<string, unknown> = {};
+      if (won) {
+        updates.sparks         = (userData.sparks || 0) + sparksEarned;
+        updates.correct_bets   = (userData.correct_bets || 0) + 1;
+        updates.current_streak = (userData.current_streak || 0) + 1;
+        updates.weekly_score   = (userData.weekly_score || 0) + sparksEarned;
+        updates.all_time_score = (userData.all_time_score || 0) + sparksEarned;
+        const newStreak = (userData.current_streak || 0) + 1;
+        if (newStreak > (userData.longest_streak || 0)) updates.longest_streak = newStreak;
+        const badges = [...(userData.badges || [])];
+        if (!badges.includes("contrarian") && bet.side === "no") badges.push("contrarian");
+        if (newStreak >= 5  && !badges.includes("streak_5"))  badges.push("streak_5");
+        if (newStreak >= 10 && !badges.includes("streak_10")) badges.push("streak_10");
+        const allTime = (userData.all_time_score || 0) + sparksEarned;
+        if (allTime >= 1000 && !badges.includes("club_1000")) badges.push("club_1000");
+        if (allTime >= 5000 && !badges.includes("club_5000")) badges.push("club_5000");
+        updates.badges = badges;
+      } else {
+        if ((userData.current_streak || 0) > (userData.longest_streak || 0)) {
+          updates.longest_streak = userData.current_streak;
+        }
+        updates.current_streak = 0;
+      }
+      await adminClient.from("users").update(updates).eq("id", bet.uid);
+ 
+      if (userData.push_token) {
+        const title = video.title || "A video";
+        if (won) {
+          await sendPush(userData.push_token, "⚡ Bet Won!", `+${sparksEarned} Sparks — ${title}`);
+        } else {
+          await sendPush(userData.push_token, "📉 Bet Lost", `${isViral ? "Went viral" : "Flopped"} — ${title}`);
+        }
+      }
+    }
+    resolved++;
+  }
+ 
+  // Cleanup: delete resolved videos older than 3 days
+  const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  await adminClient.from("videos").delete()
+    .neq("status", "active")
+    .lt("resolved_at", threeDaysAgo);
+ 
+  return resolved;
+}
+
+
+
 
 // ── Server ────────────────────────────────────────────────
 serve(async (req) => {
@@ -227,6 +363,19 @@ serve(async (req) => {
       });
 
       return respond({ accepted: true, videoId: video.id });
+    }
+	
+	
+	
+	// ── POST /manualResolve ───────────────────────────────
+    if (path === "/manualResolve" && req.method === "POST") {
+      const secret = req.headers.get("secret") || body.secret;
+      // Allow logged-in users OR a secret key (for cron jobs)
+      if (!user && secret !== RESOLVE_SECRET) {
+        return respond({ error: "Unauthorized" }, 401);
+      }
+      const resolved = await runResolutionPass(admin);
+      return respond({ ok: true, resolved, message: `Resolved ${resolved} video(s)` });
     }
 
     // ── POST /placeBet ────────────────────────────────────
@@ -576,16 +725,21 @@ serve(async (req) => {
       return respond({ videos: enriched });
     }
 
-    // ── GET /results ──────────────────────────────────────
-    if (path === "/results" && req.method === "GET") {
-      const { data: videos } = await admin
-        .from("videos")
-        .select("*")
-        .neq("status", "active")
-        .order("resolved_at", { ascending: false })
-        .limit(30);
-      return respond({ videos: videos || [] });
-    }
+    // ── GET /results ───────────────────────────────────────
+	if (path === "/results" && req.method === "GET") {
+	  const authErr = requireAuth(); if (authErr) return authErr;
+
+	  const { data: videos, error } = await admin
+		.from("videos")
+		.select("id, tiktok_url, author_handle, thumbnail_url, title, status, resolved_at, total_bets, yes_bets, current_views, likes_at_ingestion, uploaded_at, added_at")
+		.in("status", ["resolved_yes", "resolved_no"])
+		.order("resolved_at", { ascending: false })
+		.limit(50);
+
+	  if (error) return respond({ error: error.message }, 500);
+	  const sorted = (videos || []).sort((a, b) => b.total_bets - a.total_bets);
+	  return respond({ videos: sorted });
+	}
 
     // ── GET /profile ──────────────────────────────────────
     if (path === "/profile") {

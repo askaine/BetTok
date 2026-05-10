@@ -46,7 +46,7 @@ function ResultModal({ visible, type, title, message, onClose, onAction, actionL
 const CRITERIA = [
   { icon: 'heart-outline',    text: '500 – 5,000 likes' },
   { icon: 'time-outline',     text: 'Posted within the last 7 days' },
-  { icon: 'eye-off-outline',  text: 'Under 100,000 views' },
+  { icon: 'eye-off-outline',  text: 'Under 50,000 views' },
   { icon: 'copy-outline',     text: 'Not already submitted' },
 ];
 

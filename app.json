@@ -1,6 +1,7 @@
 {
   "expo": {
     "name": "BetTok",
+	"icon": "./assets/icon.png", 
     "slug": "bettok",
     "version": "1.0.0",
 	"scheme": "bettok",
@@ -17,8 +18,9 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#ffffff"
-      },
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#121212" 
+      },,
       "package": "com.yourname.spark",
       "newArchEnabled": true
     },

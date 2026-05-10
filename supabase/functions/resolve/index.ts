@@ -5,7 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL         = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const VIRALITY_THRESHOLD   = 1_000_000;
+const VIRALITY_THRESHOLD   = 50_000;
 const MIN_BETS_THRESHOLD   = 10; // Change this to adjust minimum bets required
 
 // Fixed odds for bracket bets — must match constants in BetScreen.js
