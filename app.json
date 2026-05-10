@@ -20,7 +20,7 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#121212" 
-      },,
+      },
       "package": "com.yourname.spark",
       "newArchEnabled": true
     },
