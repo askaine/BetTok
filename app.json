@@ -1,16 +1,14 @@
 {
   "expo": {
     "name": "BetTok",
-	"icon": "./assets/icon.png", 
+    "icon": "./assets/icon.png",
     "slug": "bettok",
     "version": "1.0.0",
-	"scheme": "bettok",
+    "scheme": "bettok",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.yourname.spark",
@@ -19,14 +17,27 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#121212" 
+        "backgroundColor": "#121212"
       },
       "package": "com.yourname.spark",
       "newArchEnabled": true
     },
     "plugins": [
       "expo-font",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebPageWithMaxCount": 1
+          },
+          "androidIntentFilters": ["text/*"],
+          "androidMainActivityAttributes": {
+            "android:launchMode": "singleTask"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
