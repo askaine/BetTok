@@ -1,17 +1,17 @@
 // screens/VideoScreen.js
-// Full-screen video modal — opened when tapping a card in Trending
 import React, { useRef, useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, Pressable, SafeAreaView,
-  ScrollView, ActivityIndicator, Image, Modal,
+  ActivityIndicator, Image,
 } from 'react-native';
 import { Video, ResizeMode, Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { getApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
 
-// ── Reusable video player (same logic as FeedScreen) ──────
 function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
   const videoRef  = useRef(null);
   const hasLoaded = useRef(false);
@@ -24,48 +24,42 @@ function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
       playsInSilentModeIOS:    true,
       staysActiveInBackground: false,
       shouldDuckAndroid:       true,
-    });
+    }).catch(() => {});
   }, []);
 
   const togglePlay = async () => {
     if (!videoRef.current) return;
-
     if (isPlaying) {
       await videoRef.current.pauseAsync();
       setIsPlaying(false);
       return;
     }
-
     if (!hasLoaded.current) {
       setFetchingUrl(true);
       try {
-        let urlToLoad = fallbackUrl;
+        let uri = fallbackUrl;
         try {
-          const result = await getApi('/videoUrl', { id: videoId });
-          if (result?.url) urlToLoad = result.url;
+          const r = await getApi('/videoUrl', { id: videoId });
+          if (r?.url) uri = r.url;
         } catch (_) {}
-        await videoRef.current.loadAsync({ uri: urlToLoad }, {}, false);
+        await videoRef.current.loadAsync({ uri }, {}, false);
         hasLoaded.current = true;
       } catch (e) {
-        console.error('VideoPlayer load error:', e);
         setFetchingUrl(false);
         return;
       }
       setFetchingUrl(false);
     }
-
     try {
       await videoRef.current.playAsync();
       setIsPlaying(true);
-    } catch (e) {
-      console.error('VideoPlayer play error:', e);
-    }
+    } catch (_) {}
   };
 
-  const onPlaybackStatusUpdate = (status) => {
-    if (!status.isLoaded) return;
-    setIsBuffering(status.isBuffering && !status.isPlaying);
-    if (status.didJustFinish) {
+  const onStatus = (s) => {
+    if (!s.isLoaded) return;
+    setIsBuffering(s.isBuffering && !s.isPlaying);
+    if (s.didJustFinish) {
       setIsPlaying(false);
       videoRef.current?.setPositionAsync(0);
     }
@@ -73,146 +67,140 @@ function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
 
   return (
     <Pressable style={styles.videoContainer} onPress={togglePlay}>
-      {thumbnail && !isPlaying && !fetchingUrl && (
-        <Image source={{ uri: thumbnail }} style={styles.video} resizeMode="cover" />
+      {/* Thumbnail shown before play */}
+      {!isPlaying && thumbnail && (
+        <Image
+          source={{ uri: thumbnail }}
+          style={StyleSheet.absoluteFillObject}
+          resizeMode="cover"
+        />
       )}
       <Video
         ref={videoRef}
         style={[StyleSheet.absoluteFillObject, { opacity: isPlaying ? 1 : 0 }]}
         useNativeControls={false}
         resizeMode={ResizeMode.COVER}
-        onPlaybackStatusUpdate={onPlaybackStatusUpdate}
-        progressUpdateIntervalMillis={500}
-        volume={1.0}
+        shouldPlay={false}
         isMuted={false}
+        volume={1.0}
+        onPlaybackStatusUpdate={onStatus}
       />
       {(fetchingUrl || isBuffering) && (
-        <View style={styles.overlayCenter} pointerEvents="none">
+        <View style={styles.videoOverlay} pointerEvents="none">
           <ActivityIndicator color="#fff" size="large" />
-          {fetchingUrl && <Text style={styles.fetchingHint}>Loading video…</Text>}
+          {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
         </View>
       )}
       {!isPlaying && !fetchingUrl && !isBuffering && (
-        <View style={styles.overlayCenter} pointerEvents="none">
-          <View style={styles.playCircle}>
+        <View style={styles.videoOverlay} pointerEvents="none">
+          <View style={styles.playBtn}>
             <Ionicons name="play" size={32} color="#fff" />
           </View>
-          <Text style={styles.tapHint}>Tap to play</Text>
+          <Text style={styles.videoHint}>Tap to play</Text>
         </View>
       )}
       {isPlaying && (
         <View style={styles.audioIndicator} pointerEvents="none">
-          <Ionicons name="volume-high" size={14} color="#fff" />
+          <Ionicons name="volume-high" size={13} color="#fff" />
         </View>
       )}
     </Pressable>
   );
 }
 
-// ── Odds bar ──────────────────────────────────────────────
-function OddsBar({ video }) {
-  const yesOdds  = video.odds?.yes     || 2.0;
-  const noOdds   = video.odds?.no      || 2.0;
-  const yesProb  = video.odds?.yesProb || 50;
-  const noProb   = video.odds?.noProb  || 50;
-
-  return (
-    <View style={styles.oddsContainer}>
-      <View style={styles.oddsLabelRow}>
-        <Text style={[styles.oddsLabel, { color: COLORS.yes }]}>
-          🚀 {yesProb}%  ·  {yesOdds.toFixed(2)}×
-        </Text>
-        <Text style={styles.oddsDivider}>market odds</Text>
-        <Text style={[styles.oddsLabel, { color: COLORS.accent }]}>
-          {noOdds.toFixed(2)}×  ·  {noProb}% 📉
-        </Text>
-      </View>
-      <View style={styles.oddsBar}>
-        <View style={[styles.oddsYesFill, { flex: yesProb }]} />
-        <View style={[styles.oddsNoFill,  { flex: noProb  }]} />
-      </View>
-    </View>
-  );
-}
-
-// ── VideoScreen ───────────────────────────────────────────
 export default function VideoScreen() {
   const navigation = useNavigation();
   const route      = useRoute();
   const { video }  = route.params;
 
-  const timeLeft    = getTimeLeft(video.resolution_deadline ? new Date(video.resolution_deadline) : new Date());
+  const yesOdds  = video.odds?.yes     ?? 2.0;
+  const noOdds   = video.odds?.no      ?? 2.0;
+  const yesProb  = video.odds?.yesProb ?? 50;
+  const noProb   = video.odds?.noProb  ?? 50;
+  const timeLeft = getTimeLeft(video.resolution_deadline ? new Date(video.resolution_deadline) : new Date());
   const uploadedAgo = video.uploaded_at ? getTimeAgo(new Date(video.uploaded_at)) : null;
 
-  const handleBet = (side) => {
+  const handleBet = async (side) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     navigation.navigate('Bet', { video, suggestedSide: side });
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Close button */}
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      {/* Top bar */}
       <View style={styles.topBar}>
-        <View style={styles.topBarMeta}>
-          <View style={styles.authorDot} />
-          <Text style={styles.authorHandle}>Anonymous Creator</Text>
+        <View style={styles.topBarLeft}>
+          <View style={styles.anonDot} />
+          <Text style={styles.anonLabel}>Anonymous</Text>
           {uploadedAgo && <Text style={styles.uploadedAgo}>· {uploadedAgo}</Text>}
         </View>
         <View style={styles.topBarRight}>
           <View style={styles.timerBadge}>
-            <Ionicons name="time-outline" size={11} color={COLORS.accent} />
+            <Ionicons name="time-outline" size={10} color={COLORS.accent} />
             <Text style={styles.timerText}>{timeLeft}</Text>
           </View>
-          <Pressable
-            style={styles.closeBtn}
-            onPress={() => navigation.goBack()}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
+          <Pressable onPress={() => navigation.goBack()} hitSlop={14} style={styles.closeBtn}>
             <Ionicons name="close" size={22} color={COLORS.muted} />
           </Pressable>
         </View>
       </View>
 
-      {/* Likes at submission */}
+      {/* Likes badge */}
       {video.likes_at_ingestion != null && (
         <View style={styles.likesBadge}>
-          <Ionicons name="heart" size={11} color={COLORS.accent} />
-          <Text style={styles.likesText}>
-            {video.likes_at_ingestion.toLocaleString()} likes when submitted
-          </Text>
+          <Ionicons name="heart" size={10} color={COLORS.accent} />
+          <Text style={styles.likesText}>{video.likes_at_ingestion.toLocaleString()} likes when submitted</Text>
         </View>
       )}
 
-      {/* Video */}
+      {/* Video player */}
       <VideoPlayer
         videoId={video.id}
         fallbackUrl={video.direct_video_url}
         thumbnail={video.thumbnail_url}
       />
 
-      {/* Market odds */}
-      <View style={styles.bottomSection}>
-        <OddsBar video={video} />
+      {/* Bottom section */}
+      <View style={styles.bottom}>
+        {/* Live odds */}
+        <View style={styles.oddsContainer}>
+          <View style={styles.oddsLabelRow}>
+            <Text style={[styles.oddsLabel, { color: COLORS.yes }]}>
+              🚀 {yesProb}% · {yesOdds.toFixed(2)}×
+            </Text>
+            <Text style={styles.oddsCenter}>market odds</Text>
+            <Text style={[styles.oddsLabel, { color: COLORS.accent }]}>
+              {noOdds.toFixed(2)}× · {noProb}% 📉
+            </Text>
+          </View>
+          <View style={styles.oddsBar}>
+            <View style={[styles.oddsYes, { flex: yesProb }]} />
+            <View style={[styles.oddsNo,  { flex: noProb  }]} />
+          </View>
+        </View>
 
-        <View style={styles.noisyRow}>
+        {/* Crowd */}
+        <View style={styles.crowdRow}>
           <Ionicons name="people-outline" size={12} color={COLORS.muted} />
-          <Text style={styles.noisyText}>{video.noisy_bet_range} predictions placed</Text>
+          <Text style={styles.crowdText}>{video.noisy_bet_range} predictions placed</Text>
         </View>
 
         {/* Bet buttons */}
         <View style={styles.betRow}>
-          <Pressable
-            style={({ pressed }) => [styles.betBtn, styles.betBtnYes, pressed && { opacity: 0.8 }]}
-            onPress={() => handleBet('yes')}
-          >
-            <Ionicons name="trending-up" size={16} color={COLORS.bg} />
-            <Text style={styles.betBtnLabel}>GOES VIRAL</Text>
+          <Pressable style={styles.betViral} onPress={() => handleBet('yes')}>
+            <LinearGradient colors={['#00E87A', '#00A855']} style={styles.betGrad} start={[0,0]} end={[1,0]}>
+              <Ionicons name="trending-up" size={18} color="#000" />
+              <Text style={styles.betViralLabel}>GOES VIRAL</Text>
+              <Text style={styles.betOdds}>{yesOdds.toFixed(2)}×</Text>
+            </LinearGradient>
           </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.betBtn, styles.betBtnNo, pressed && { opacity: 0.8 }]}
-            onPress={() => handleBet('no')}
-          >
-            <Ionicons name="trending-down" size={16} color={COLORS.text} />
-            <Text style={[styles.betBtnLabel, { color: COLORS.text }]}>FLOPS</Text>
+
+          <Pressable style={styles.betFlop} onPress={() => handleBet('no')}>
+            <View style={styles.betFlopInner}>
+              <Ionicons name="trending-down" size={18} color={COLORS.accent} />
+              <Text style={styles.betFlopLabel}>FLOPS</Text>
+              <Text style={[styles.betOdds, { color: COLORS.accent }]}>{noOdds.toFixed(2)}×</Text>
+            </View>
           </Pressable>
         </View>
       </View>
@@ -220,17 +208,18 @@ export default function VideoScreen() {
   );
 }
 
-function getTimeLeft(deadline) {
-  const ms = deadline - Date.now();
-  if (ms <= 0) return 'Resolving...';
+function getTimeLeft(d) {
+  const ms = d - Date.now();
+  if (ms <= 0) return 'Resolving…';
   const h = Math.floor(ms / 3_600_000);
-  const d = Math.floor(h / 24);
-  if (d > 0) return `${d}d ${h % 24}h left`;
-  return `${h}h left`;
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m left`;
 }
 
-function getTimeAgo(date) {
-  const ms = Date.now() - date;
+function getTimeAgo(d) {
+  const ms = Date.now() - d;
   const m  = Math.floor(ms / 60000);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
@@ -240,41 +229,45 @@ function getTimeAgo(date) {
 
 const styles = StyleSheet.create({
   container:    { flex: 1, backgroundColor: COLORS.bg },
+
   topBar:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: 10 },
-  topBarMeta:   { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  topBarLeft:   { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  anonDot:      { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.muted },
+  anonLabel:    { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 12, fontStyle: 'italic' },
+  uploadedAgo:  { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
   topBarRight:  { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  authorDot:    { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.muted },
-  authorHandle: { color: COLORS.muted, fontSize: 12, fontStyle: 'italic' },
-  uploadedAgo:  { color: COLORS.muted, fontSize: 11, opacity: 0.7 },
-  timerBadge:   { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.accentGlow, paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.sm },
-  timerText:    { color: COLORS.accent, fontSize: 10, fontWeight: '700' },
+  timerBadge:   { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.accentGlow, borderWidth: 1, borderColor: COLORS.accent + '44', paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.full },
+  timerText:    { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 10, fontWeight: '700' },
   closeBtn:     { padding: 4 },
+
   likesBadge:   { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.md, paddingBottom: 6 },
-  likesText:    { color: COLORS.muted, fontSize: 11 },
+  likesText:    { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
 
-  // Video
-  videoContainer: { width: '100%', height: 420, backgroundColor: '#000' },
-  video:          { width: '100%', height: '100%' },
-  overlayCenter:  { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', gap: 8 },
-  playCircle:     { width: 64, height: 64, borderRadius: 32, backgroundColor: '#00000066', justifyContent: 'center', alignItems: 'center' },
-  tapHint:        { color: '#ffffff99', fontSize: 12 },
-  fetchingHint:   { color: '#ffffffcc', fontSize: 12 },
-  audioIndicator: { position: 'absolute', top: 10, right: 10, backgroundColor: '#00000055', borderRadius: 12, padding: 4 },
+  videoContainer: { width: '100%', aspectRatio: 9 / 14, backgroundColor: '#000', position: 'relative' },
+  videoOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.1)' },
+  playBtn:      { width: 68, height: 68, borderRadius: 34, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', paddingLeft: 4 },
+  videoHint:    { color: 'rgba(255,255,255,0.6)', fontFamily: FONTS.body, fontSize: 12 },
+  audioIndicator: { position: 'absolute', bottom: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 12, padding: 6 },
 
-  // Bottom
-  bottomSection:  { flex: 1, paddingHorizontal: SPACING.md, paddingTop: SPACING.sm },
-  oddsContainer:  { marginBottom: SPACING.sm },
-  oddsLabelRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  oddsLabel:      { fontFamily: FONTS.body, fontSize: 13, fontWeight: '700' },
-  oddsDivider:    { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10, letterSpacing: 1 },
-  oddsBar:        { flexDirection: 'row', height: 6, borderRadius: 3, overflow: 'hidden', backgroundColor: COLORS.surfaceHigh },
-  oddsYesFill:    { backgroundColor: COLORS.yes },
-  oddsNoFill:     { backgroundColor: COLORS.accent },
-  noisyRow:       { flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: SPACING.sm },
-  noisyText:      { color: COLORS.muted, fontSize: 11 },
-  betRow:         { flexDirection: 'row', gap: SPACING.sm },
-  betBtn:         { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', padding: 14, borderRadius: RADIUS.md, gap: 6 },
-  betBtnYes:      { backgroundColor: COLORS.yes },
-  betBtnNo:       { backgroundColor: COLORS.surfaceHigh, borderWidth: 1, borderColor: COLORS.border },
-  betBtnLabel:    { color: COLORS.bg, fontWeight: 'bold', fontSize: 13, letterSpacing: 0.5 },
+  bottom:       { flex: 1, paddingHorizontal: SPACING.md, paddingTop: SPACING.sm, gap: SPACING.sm, justifyContent: 'center' },
+
+  oddsContainer: { gap: 6 },
+  oddsLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  oddsLabel:    { fontFamily: FONTS.body, fontSize: 13, fontWeight: '700' },
+  oddsCenter:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10, letterSpacing: 1 },
+  oddsBar:      { flexDirection: 'row', height: 5, borderRadius: 3, overflow: 'hidden', backgroundColor: COLORS.surfaceHigh },
+  oddsYes:      { backgroundColor: COLORS.yes },
+  oddsNo:       { backgroundColor: COLORS.accent },
+
+  crowdRow:     { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  crowdText:    { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
+
+  betRow:       { flexDirection: 'row', gap: SPACING.sm },
+  betViral:     { flex: 1, borderRadius: RADIUS.md, overflow: 'hidden' },
+  betGrad:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 16 },
+  betViralLabel: { color: '#000', fontFamily: FONTS.body, fontWeight: '700', fontSize: 14, letterSpacing: 0.5 },
+  betOdds:      { color: '#000', fontFamily: FONTS.display, fontSize: 16 },
+  betFlop:      { flex: 1, borderRadius: RADIUS.md, borderWidth: 1.5, borderColor: COLORS.accent + '66' },
+  betFlopInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 16 },
+  betFlopLabel: { color: COLORS.accent, fontFamily: FONTS.body, fontWeight: '700', fontSize: 14, letterSpacing: 0.5 },
 });

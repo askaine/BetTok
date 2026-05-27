@@ -1,72 +1,107 @@
 // screens/AuthScreen.js
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View, Text, TextInput, Pressable, StyleSheet,
-  KeyboardAvoidingView, Platform, Animated, Alert, ActivityIndicator,
+  KeyboardAvoidingView, Platform, Animated, ActivityIndicator,
+  ScrollView, Modal,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import { useAuth } from '../context/AuthContext';
+import { getApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
+import { useNavigation } from '@react-navigation/native';
 
-const EMAIL_REGEX    = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const USERNAME_REGEX = /^[a-zA-Z0-9_]{3,20}$/;
+function ResultModal({ visible, type, title, message, onClose }) {
+  const colors = { error: COLORS.accent, warning: COLORS.spark, success: COLORS.yes };
+  const color  = colors[type] || COLORS.accent;
+  return (
+    <Modal transparent animationType="fade" visible={visible} onRequestClose={onClose}>
+      <View style={modalStyles.overlay}>
+        <View style={modalStyles.sheet}>
+          <Text style={[modalStyles.title, { color }]}>{title}</Text>
+          <Text style={modalStyles.message}>{message}</Text>
+          <Pressable style={[modalStyles.btn, { backgroundColor: color }]} onPress={onClose}>
+            <Text style={modalStyles.btnLabel}>Got it</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 export default function AuthScreen() {
-  const { login, register, resendVerification, resetPassword } = useAuth();
+  const navigation = useNavigation();
+  const { login, register, resendVerification } = useAuth();
 
-  // mode: 'login' | 'register' | 'forgot'
-  const [mode, setMode]                   = useState('login');
-  const [email, setEmail]                 = useState('');
-  const [password, setPassword]           = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [username, setUsername]           = useState('');
-  const [loading, setLoading]             = useState(false);
+  const [mode,             setMode]             = useState('login');
+  const [email,            setEmail]            = useState('');
+  const [password,         setPassword]         = useState('');
+  const [username,         setUsername]         = useState('');
+  const [usernameStatus,   setUsernameStatus]   = useState(null); // null | 'checking' | 'available' | 'taken' | 'invalid'
+  const [showPassword,     setShowPassword]     = useState(false);
+  const [loading,          setLoading]          = useState(false);
+  const [agreedToTerms,    setAgreedToTerms]    = useState(false);
   const [verificationSent, setVerificationSent] = useState(false);
-  const [resetSent, setResetSent]         = useState(false);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [modal,            setModal]            = useState({ visible: false });
+
+  const fadeAnim  = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(30)).current;
+  const checkTimer = useRef(null);
 
   useEffect(() => {
-    Animated.timing(fadeAnim, { toValue: 1, duration: 600, useNativeDriver: true }).start();
+    Animated.parallel([
+      Animated.timing(fadeAnim,  { toValue: 1, duration: 500, useNativeDriver: true }),
+      Animated.spring(slideAnim, { toValue: 0, tension: 80, friction: 12, useNativeDriver: true }),
+    ]).start();
   }, []);
 
-  // Clear sensitive fields when switching modes to avoid state bleed.
-  const switchMode = (newMode) => {
-    setPassword('');
-    setConfirmPassword('');
-    setMode(newMode);
+  // Debounced username availability check
+  const checkUsername = useCallback((val) => {
+    if (checkTimer.current) clearTimeout(checkTimer.current);
+    if (!val || val.length < 3) { setUsernameStatus(null); return; }
+    setUsernameStatus('checking');
+    checkTimer.current = setTimeout(async () => {
+      try {
+        const r = await getApi('/checkUsername', { username: val });
+        setUsernameStatus(r.available ? 'available' : (r.reason ? 'invalid' : 'taken'));
+      } catch (_) {
+        setUsernameStatus(null);
+      }
+    }, 600);
+  }, []);
+
+  const handleUsernameChange = (val) => {
+    setUsername(val);
+    checkUsername(val);
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Login / Register submit
-  // ─────────────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
-    const trimmedEmail    = email.trim();
-    const trimmedUsername = username.trim();
-
-    // Shared validation
-    if (!trimmedEmail) {
-      Alert.alert('Validation', 'Please enter your email'); return;
+    if (!email.trim() || !password) {
+      setModal({ visible: true, type: 'error', title: 'Missing fields', message: 'Please fill in all fields.' });
+      return;
     }
-    if (!EMAIL_REGEX.test(trimmedEmail)) {
-      Alert.alert('Validation', 'Please enter a valid email address'); return;
-    }
-    if (!password) {
-      Alert.alert('Validation', 'Please enter a password'); return;
-    }
-    if (password.length < 8) {
-      Alert.alert('Validation', 'Password must be at least 8 characters'); return;
-    }
-
-    // Register-only validation
     if (mode === 'register') {
-      if (!trimmedUsername) {
-        Alert.alert('Validation', 'Please enter a username'); return;
-      }
-      if (!USERNAME_REGEX.test(trimmedUsername)) {
-        Alert.alert('Validation', 'Username must be 3–20 characters: letters, numbers, and underscores only');
+      if (!username.trim()) {
+        setModal({ visible: true, type: 'error', title: 'Username required', message: 'Choose a username.' });
         return;
       }
-      if (password !== confirmPassword) {
-        Alert.alert('Validation', "Passwords don't match — please re-enter them");
+      if (usernameStatus === 'taken') {
+        setModal({ visible: true, type: 'error', title: 'Username taken', message: 'That username is already in use. Try another.' });
+        return;
+      }
+      if (usernameStatus === 'invalid') {
+        setModal({ visible: true, type: 'error', title: 'Invalid username', message: '3–20 characters, letters, numbers, and underscores only.' });
+        return;
+      }
+      if (password.length < 6) {
+        setModal({ visible: true, type: 'error', title: 'Password too short', message: 'Minimum 6 characters.' });
+        return;
+      }
+      if (!agreedToTerms) {
+        setModal({ visible: true, type: 'warning', title: 'Please agree', message: 'You must agree to the Terms of Service and Privacy Policy to continue.' });
         return;
       }
     }
@@ -74,289 +109,262 @@ export default function AuthScreen() {
     setLoading(true);
     try {
       if (mode === 'login') {
-        await login(trimmedEmail, password);
+        await login(email.trim(), password);
       } else {
-        await register(trimmedEmail, password, trimmedUsername);
+        await register(email.trim(), password, username.trim());
+        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setVerificationSent(true);
       }
     } catch (err) {
-      const raw = err.message || '';
       const msg =
-        raw.includes('Email not confirmed')
-          ? 'Please verify your email first. Check your inbox.'
-        : raw.includes('Invalid login') || raw.includes('invalid_credentials')
-          ? 'Wrong email or password'
-        : raw.includes('already registered') || raw.includes('already been registered')
-          ? 'That email is already registered. Try logging in.'
-        : raw.includes('3–20 characters')
-          ? raw   // surface our own validation message from AuthContext
-        : 'Something went wrong. Please try again.';
-      Alert.alert('Error', msg);
+        err.message?.includes('Email not confirmed') ? 'Please verify your email first. Check your inbox.'
+        : err.message?.includes('Invalid login') || err.message?.includes('Invalid email or password') ? 'Wrong email or password.'
+        : err.message?.includes('already registered') || err.message?.includes('already been registered') ? 'That email is already registered.'
+        : err.message || 'Something went wrong.';
+      setModal({ visible: true, type: 'error', title: 'Error', message: msg });
     } finally {
       setLoading(false);
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Forgot password
-  // ─────────────────────────────────────────────────────────────────────────
-  const handleForgotPassword = async () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      Alert.alert('Validation', 'Enter your email address first'); return;
-    }
-    if (!EMAIL_REGEX.test(trimmedEmail)) {
-      Alert.alert('Validation', 'Please enter a valid email address'); return;
-    }
-    setLoading(true);
-    try {
-      await resetPassword(trimmedEmail);
-      setResetSent(true);
-    } catch (err) {
-      Alert.alert('Error', 'Could not send reset email. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Resend verification
-  // ─────────────────────────────────────────────────────────────────────────
   const handleResend = async () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail) {
-      Alert.alert('Validation', 'Enter your email first'); return;
-    }
-    if (!EMAIL_REGEX.test(trimmedEmail)) {
-      Alert.alert('Validation', 'Please enter a valid email address'); return;
+    if (!email.trim()) {
+      setModal({ visible: true, type: 'warning', title: 'Enter your email', message: 'Type your email first.' });
+      return;
     }
     setLoading(true);
     try {
-      await resendVerification(trimmedEmail);
-      Alert.alert('Sent!', 'Check your inbox for the verification link.');
+      await resendVerification(email.trim());
+      setModal({ visible: true, type: 'success', title: 'Sent!', message: 'Check your inbox for the verification link.' });
     } catch (err) {
-      Alert.alert('Error', 'Could not resend. Please try again.');
+      setModal({ visible: true, type: 'error', title: 'Error', message: err.message });
     } finally {
       setLoading(false);
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Verification sent screen
-  // ─────────────────────────────────────────────────────────────────────────
+  const switchMode = (m) => {
+    setMode(m);
+    setUsernameStatus(null);
+    setUsername('');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const usernameIcon = () => {
+    if (usernameStatus === 'checking')  return <ActivityIndicator size="small" color={COLORS.muted} />;
+    if (usernameStatus === 'available') return <Ionicons name="checkmark-circle" size={18} color={COLORS.yes} />;
+    if (usernameStatus === 'taken')     return <Ionicons name="close-circle" size={18} color={COLORS.accent} />;
+    if (usernameStatus === 'invalid')   return <Ionicons name="alert-circle" size={18} color={COLORS.spark} />;
+    return null;
+  };
+
+  // ── Verification sent screen ──
   if (verificationSent) {
     return (
-      <View style={styles.verifyContainer}>
-        <Text style={styles.verifyIcon}>📧</Text>
-        <Text style={styles.verifyTitle}>Check your email</Text>
-        <Text style={styles.verifyText}>
-          We sent a verification link to{'\n'}
-          <Text style={{ color: COLORS.accent }}>{email.trim()}</Text>
-          {'\n\n'}Click the link to activate your account, then come back to log in.
-        </Text>
-        <Pressable
-          style={styles.submitBtn}
-          onPress={() => { setVerificationSent(false); switchMode('login'); }}
-        >
-          <Text style={styles.submitLabel}>GO TO LOGIN</Text>
-        </Pressable>
-        <Pressable style={styles.resendBtn} onPress={handleResend} disabled={loading}>
-          <Text style={styles.resendLabel}>{loading ? 'Sending...' : 'Resend verification email'}</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Password reset sent screen
-  // ─────────────────────────────────────────────────────────────────────────
-  if (resetSent) {
-    return (
-      <View style={styles.verifyContainer}>
-        <Text style={styles.verifyIcon}>🔑</Text>
-        <Text style={styles.verifyTitle}>Check your email</Text>
-        <Text style={styles.verifyText}>
-          We sent a password reset link to{'\n'}
-          <Text style={{ color: COLORS.accent }}>{email.trim()}</Text>
-          {'\n\n'}Open the link on this device to be taken back into the app to set your new password.
-        </Text>
-        <Pressable
-          style={styles.submitBtn}
-          onPress={() => { setResetSent(false); switchMode('login'); }}
-        >
-          <Text style={styles.submitLabel}>BACK TO LOGIN</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Forgot password screen
-  // ─────────────────────────────────────────────────────────────────────────
-  if (mode === 'forgot') {
-    return (
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <Animated.View style={[styles.inner, { opacity: fadeAnim }]}>
-          <View style={styles.logoArea}>
-            <Text style={styles.logo}>BetTok</Text>
-            <Text style={styles.tagline}>reset your password</Text>
-          </View>
-          <View style={styles.fields}>
-            <TextInput
-              style={styles.input}
-              placeholder="Email"
-              placeholderTextColor={COLORS.muted}
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              autoComplete="email"
-            />
-          </View>
-          <Pressable style={styles.submitBtn} onPress={handleForgotPassword} disabled={loading}>
-            {loading
-              ? <ActivityIndicator color={COLORS.bg} />
-              : <Text style={styles.submitLabel}>SEND RESET LINK</Text>}
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={styles.verifyContainer}>
+          <Text style={{ fontSize: 64 }}>📧</Text>
+          <Text style={styles.verifyTitle}>Check your email</Text>
+          <Text style={styles.verifyText}>
+            We sent a verification link to{'\n'}
+            <Text style={{ color: COLORS.accent }}>{email}</Text>
+            {'\n\n'}Click the link to activate your account, then come back to log in.
+          </Text>
+          <Pressable
+            style={styles.verifyBtn}
+            onPress={() => { setVerificationSent(false); setMode('login'); }}
+          >
+            <LinearGradient colors={['#FF3B5C','#CC1F3F']} style={styles.verifyBtnGrad} start={[0,0]} end={[1,0]}>
+              <Text style={styles.verifyBtnLabel}>GO TO LOGIN</Text>
+            </LinearGradient>
           </Pressable>
-          <Pressable onPress={() => switchMode('login')} disabled={loading}>
-            <Text style={[styles.resendLabel, { textAlign: 'center' }]}>← Back to login</Text>
+          <Pressable onPress={handleResend} disabled={loading} style={{ marginTop: 8 }}>
+            <Text style={styles.resendLink}>{loading ? 'Sending…' : 'Resend verification email'}</Text>
           </Pressable>
-        </Animated.View>
-      </KeyboardAvoidingView>
+        </View>
+      </SafeAreaView>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Main login / register screen
-  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <Animated.View style={[styles.inner, { opacity: fadeAnim }]}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }], gap: SPACING.lg }}>
 
-        <View style={styles.logoArea}>
-          <Text style={styles.logo}>BetTok</Text>
-          <Text style={styles.tagline}>predict the next viral</Text>
-        </View>
+            {/* Logo */}
+            <View style={styles.logoArea}>
+              <Text style={styles.logo}>BetTok</Text>
+              <Text style={styles.tagline}>predict the next viral</Text>
+            </View>
 
-        <View style={styles.modeToggle}>
-          <Pressable
-            style={[styles.modeBtn, mode === 'login' && styles.modeBtnActive]}
-            onPress={() => switchMode('login')}
-          >
-            <Text style={[styles.modeBtnLabel, mode === 'login' && styles.modeBtnLabelActive]}>
-              Login
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.modeBtn, mode === 'register' && styles.modeBtnActive]}
-            onPress={() => switchMode('register')}
-          >
-            <Text style={[styles.modeBtnLabel, mode === 'register' && styles.modeBtnLabelActive]}>
-              Register
-            </Text>
-          </Pressable>
-        </View>
+            {/* Mode toggle */}
+            <View style={styles.modeToggle}>
+              <Pressable style={[styles.modeBtn, mode === 'login' && styles.modeBtnActive]} onPress={() => switchMode('login')}>
+                <Text style={[styles.modeBtnLabel, mode === 'login' && styles.modeBtnLabelActive]}>Login</Text>
+              </Pressable>
+              <Pressable style={[styles.modeBtn, mode === 'register' && styles.modeBtnActive]} onPress={() => switchMode('register')}>
+                <Text style={[styles.modeBtnLabel, mode === 'register' && styles.modeBtnLabelActive]}>Register</Text>
+              </Pressable>
+            </View>
 
-        <View style={styles.fields}>
-          {mode === 'register' && (
-            <TextInput
-              style={styles.input}
-              placeholder="Username (3–20 chars, letters / numbers / _)"
-              placeholderTextColor={COLORS.muted}
-              value={username}
-              onChangeText={setUsername}
-              autoCapitalize="none"
-              autoCorrect={false}
-              maxLength={20}
-            />
-          )}
-          <TextInput
-            style={styles.input}
-            placeholder="Email"
-            placeholderTextColor={COLORS.muted}
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            autoComplete="email"
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Password (min 8 characters)"
-            placeholderTextColor={COLORS.muted}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-          />
-          {mode === 'register' && (
-            <TextInput
-              style={styles.input}
-              placeholder="Confirm password"
-              placeholderTextColor={COLORS.muted}
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              secureTextEntry
-              autoComplete="new-password"
-            />
-          )}
-        </View>
+            {/* Fields */}
+            <View style={styles.fields}>
+              {mode === 'register' && (
+                <View style={styles.inputWrapper}>
+                  <Ionicons name="person-outline" size={16} color={COLORS.muted} style={styles.inputIcon} />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Username"
+                    placeholderTextColor={COLORS.muted}
+                    value={username}
+                    onChangeText={handleUsernameChange}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {usernameIcon()}
+                </View>
+              )}
+              {mode === 'register' && usernameStatus === 'taken' && (
+                <Text style={styles.usernameError}>Username taken — try another</Text>
+              )}
+              {mode === 'register' && usernameStatus === 'available' && (
+                <Text style={styles.usernameSuccess}>Username available ✓</Text>
+              )}
 
-        <Pressable style={styles.submitBtn} onPress={handleSubmit} disabled={loading}>
-          {loading
-            ? <ActivityIndicator color={COLORS.bg} />
-            : <Text style={styles.submitLabel}>
-                {mode === 'login' ? 'ENTER THE ARENA' : 'CREATE ACCOUNT'}
-              </Text>}
-        </Pressable>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="mail-outline" size={16} color={COLORS.muted} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Email address"
+                  placeholderTextColor={COLORS.muted}
+                  value={email}
+                  onChangeText={setEmail}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                />
+              </View>
 
-        {mode === 'login' && (
-          <View style={styles.loginFooter}>
-            <Pressable onPress={() => switchMode('forgot')} disabled={loading}>
-              <Text style={styles.resendLabel}>Forgot password?</Text>
+              <View style={styles.inputWrapper}>
+                <Ionicons name="lock-closed-outline" size={16} color={COLORS.muted} style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder={mode === 'register' ? 'Password (min 6 characters)' : 'Password'}
+                  placeholderTextColor={COLORS.muted}
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry={!showPassword}
+                />
+                <Pressable onPress={() => setShowPassword(p => !p)} hitSlop={10}>
+                  <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color={COLORS.muted} />
+                </Pressable>
+              </View>
+            </View>
+
+            {/* Terms agreement — only on register */}
+            {mode === 'register' && (
+              <Pressable style={styles.termsRow} onPress={() => setAgreedToTerms(p => !p)}>
+                <View style={[styles.checkbox, agreedToTerms && styles.checkboxActive]}>
+                  {agreedToTerms && <Ionicons name="checkmark" size={12} color="#fff" />}
+                </View>
+                <Text style={styles.termsText}>
+                  I agree to the{' '}
+                  <Text style={styles.termsLink} onPress={() => navigation.navigate('Legal', { type: 'tos' })}>Terms of Service</Text>
+                  {' '}and{' '}
+                  <Text style={styles.termsLink} onPress={() => navigation.navigate('Legal', { type: 'privacy' })}>Privacy Policy</Text>
+                  , including the collection and commercial use of aggregated prediction data.
+                </Text>
+              </Pressable>
+            )}
+
+            {/* Submit */}
+            <Pressable style={styles.submitBtn} onPress={handleSubmit} disabled={loading}>
+              <LinearGradient colors={['#FF3B5C','#CC1F3F']} style={styles.submitBtnGrad} start={[0,0]} end={[1,0]}>
+                {loading
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.submitLabel}>
+                      {mode === 'login' ? 'ENTER THE ARENA' : 'CREATE ACCOUNT'}
+                    </Text>
+                }
+              </LinearGradient>
             </Pressable>
-            <Pressable onPress={handleResend} disabled={loading}>
-              <Text style={styles.resendLabel}>Didn't get a verification email? Resend</Text>
-            </Pressable>
-          </View>
-        )}
 
-        {mode === 'register' && (
-          <Text style={styles.bonusHint}>⚡ New accounts start with 1,000 free Sparks</Text>
-        )}
+            {mode === 'login' && (
+              <Pressable onPress={handleResend} disabled={loading}>
+                <Text style={styles.resendLink}>Didn't get a verification email? Resend</Text>
+              </Pressable>
+            )}
 
-      </Animated.View>
-    </KeyboardAvoidingView>
+            {mode === 'register' && (
+              <View style={styles.bonusHint}>
+                <Text style={{ fontSize: 18 }}>⚡</Text>
+                <Text style={styles.bonusHintText}>New accounts start with 1,000 free Sparks</Text>
+              </View>
+            )}
+
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <ResultModal
+        visible={modal.visible}
+        type={modal.type}
+        title={modal.title}
+        message={modal.message}
+        onClose={() => setModal({ visible: false })}
+      />
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container:        { flex: 1, backgroundColor: COLORS.bg },
-  inner:            { flex: 1, justifyContent: 'center', paddingHorizontal: SPACING.lg, gap: SPACING.lg },
-  logoArea:         { alignItems: 'center', marginBottom: SPACING.lg },
-  logo:             { color: COLORS.accent, fontFamily: FONTS.display, fontSize: 52, letterSpacing: 4 },
-  tagline:          { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12, letterSpacing: 2 },
-  modeToggle:       { flexDirection: 'row', backgroundColor: COLORS.surface, borderRadius: RADIUS.md, padding: 4, borderWidth: 1, borderColor: COLORS.border },
-  modeBtn:          { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: RADIUS.sm },
-  modeBtnActive:    { backgroundColor: COLORS.accent },
-  modeBtnLabel:     { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13 },
-  modeBtnLabelActive: { color: COLORS.bg, fontWeight: '700' },
-  fields:           { gap: SPACING.sm },
-  input:            { backgroundColor: COLORS.surface, color: COLORS.text, fontFamily: FONTS.body, fontSize: 14, paddingHorizontal: SPACING.md, paddingVertical: 14, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border },
-  submitBtn:        { backgroundColor: COLORS.accent, paddingVertical: 16, borderRadius: RADIUS.md, alignItems: 'center' },
-  submitLabel:      { color: COLORS.bg, fontFamily: FONTS.body, fontSize: 13, fontWeight: '700', letterSpacing: 2 },
-  resendBtn:        { alignItems: 'center' },
-  resendLabel:      { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12, textAlign: 'center' },
-  bonusHint:        { color: COLORS.spark, fontFamily: FONTS.body, fontSize: 12, textAlign: 'center' },
-  loginFooter:      { gap: SPACING.sm, alignItems: 'center' },
-  verifyContainer:  { flex: 1, backgroundColor: COLORS.bg, justifyContent: 'center', alignItems: 'center', paddingHorizontal: SPACING.lg, gap: SPACING.md },
-  verifyIcon:       { fontSize: 56 },
-  verifyTitle:      { color: COLORS.text, fontFamily: FONTS.display, fontSize: 28, letterSpacing: 2 },
-  verifyText:       { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 14, textAlign: 'center', lineHeight: 22 },
+  container:    { flex: 1, backgroundColor: COLORS.bg },
+  scroll:       { flexGrow: 1, justifyContent: 'center', paddingHorizontal: SPACING.lg, paddingVertical: SPACING.xl },
+
+  logoArea:     { alignItems: 'center', gap: 6 },
+  logo:         { color: COLORS.accent, fontFamily: FONTS.display, fontSize: 52, letterSpacing: 4 },
+  tagline:      { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12, letterSpacing: 2 },
+
+  modeToggle:   { flexDirection: 'row', backgroundColor: COLORS.surface, borderRadius: RADIUS.md, padding: 4, borderWidth: 1, borderColor: COLORS.border },
+  modeBtn:      { flex: 1, paddingVertical: 12, alignItems: 'center', borderRadius: RADIUS.sm },
+  modeBtnActive: { backgroundColor: COLORS.accent },
+  modeBtnLabel:  { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 14 },
+  modeBtnLabelActive: { color: '#fff', fontWeight: '700' },
+
+  fields:       { gap: SPACING.sm },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: SPACING.sm },
+  inputIcon:    { marginRight: 8 },
+  input:        { flex: 1, color: COLORS.text, fontFamily: FONTS.body, fontSize: 14, paddingVertical: 16 },
+  usernameError:   { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 11, marginTop: -4 },
+  usernameSuccess: { color: COLORS.yes,    fontFamily: FONTS.body, fontSize: 11, marginTop: -4 },
+
+  termsRow:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACING.sm },
+  checkbox:     { width: 20, height: 20, borderRadius: 4, borderWidth: 1.5, borderColor: COLORS.border, backgroundColor: COLORS.surfaceHigh, justifyContent: 'center', alignItems: 'center', marginTop: 1, flexShrink: 0 },
+  checkboxActive: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
+  termsText:    { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 12, lineHeight: 18, flex: 1 },
+  termsLink:    { color: COLORS.accent, textDecorationLine: 'underline' },
+
+  submitBtn:    { borderRadius: RADIUS.md, overflow: 'hidden' },
+  submitBtnGrad: { paddingVertical: 18, alignItems: 'center' },
+  submitLabel:  { color: '#fff', fontFamily: FONTS.body, fontSize: 14, fontWeight: '700', letterSpacing: 2 },
+
+  resendLink:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12, textAlign: 'center' },
+  bonusHint:    { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: COLORS.sparkGlow, borderRadius: RADIUS.md, padding: SPACING.sm, borderWidth: 1, borderColor: COLORS.spark + '33' },
+  bonusHintText: { color: COLORS.spark, fontFamily: FONTS.body, fontSize: 12 },
+
+  verifyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: SPACING.lg, gap: SPACING.md },
+  verifyTitle:  { color: COLORS.text, fontFamily: FONTS.display, fontSize: 28, letterSpacing: 2 },
+  verifyText:   { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 14, textAlign: 'center', lineHeight: 22 },
+  verifyBtn:    { borderRadius: RADIUS.full, overflow: 'hidden', width: '100%' },
+  verifyBtnGrad: { paddingVertical: 16, alignItems: 'center' },
+  verifyBtnLabel: { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 14, letterSpacing: 2 },
+});
+
+const modalStyles = StyleSheet.create({
+  overlay:  { flex: 1, backgroundColor: '#000000BB', justifyContent: 'center', alignItems: 'center', padding: 32 },
+  sheet:    { backgroundColor: COLORS.surface, borderRadius: RADIUS.xl, padding: 28, alignItems: 'center', gap: 12, borderWidth: 1, borderColor: COLORS.border, width: '100%' },
+  title:    { fontFamily: FONTS.display, fontSize: 20, letterSpacing: 1, textAlign: 'center' },
+  message:  { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 13, textAlign: 'center', lineHeight: 20 },
+  btn:      { width: '100%', paddingVertical: 14, borderRadius: RADIUS.md, alignItems: 'center', marginTop: 4 },
+  btnLabel: { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 14 },
 });

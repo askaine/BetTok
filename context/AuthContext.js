@@ -5,15 +5,14 @@ import { supabase } from '../Supabaseconfig';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser]       = useState(null);
+  const [user,    setUser]    = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Get initial session
+    // Get initial session — handle expired tokens gracefully
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (error) {
-        // Refresh token invalid — clear everything and show login
-        console.warn('Session error on init:', error.message);
+        console.warn('Session error on init — signing out:', error.message);
         supabase.auth.signOut();
         setUser(null);
       } else {
@@ -24,16 +23,14 @@ export function AuthProvider({ children }) {
 
     // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED') {
+      if (event === 'SIGNED_IN'       ||
+          event === 'TOKEN_REFRESHED' ||
+          event === 'USER_UPDATED') {
         setUser(session?.user ?? null);
-      } else if (event === 'SIGNED_IN') {
-        setUser(session?.user ?? null);
-      } else if (event === 'USER_UPDATED') {
-        setUser(session?.user ?? null);
-      }
-
-      // Token refresh failed — sign out so user gets a clean login
-      if (!session && event !== 'SIGNED_OUT') {
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+      } else if (!session) {
+        // Refresh token failed or session gone — force logout
         setUser(null);
       }
     });
@@ -66,8 +63,13 @@ export function AuthProvider({ children }) {
     if (error) throw error;
   };
 
+  const updatePassword = async (newPassword) => {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) throw error;
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, register, resendVerification }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, register, resendVerification, updatePassword }}>
       {children}
     </AuthContext.Provider>
   );
