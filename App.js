@@ -9,7 +9,6 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { useShareIntent } from 'expo-share-intent';
 import { useFonts, Oswald_600SemiBold } from '@expo-google-fonts/oswald';
 import { SpaceMono_400Regular } from '@expo-google-fonts/space-mono';
 
@@ -29,13 +28,14 @@ import OnboardingScreen    from './screens/OnboardingScreen';
 import VideoScreen         from './screens/VideoScreen';
 import ResetPasswordScreen from './screens/ResetPasswordScreen';
 import LegalScreen         from './screens/LegalScreen';
+import AdminScreen         from './screens/AdminScreen';
 
 const Tab   = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
 export const navigationRef = createNavigationContainerRef();
 
-// Configure push notification behavior
+// Configure push notification display
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -43,6 +43,22 @@ Notifications.setNotificationHandler({
     shouldSetBadge:  false,
   }),
 });
+
+// ── Helper: extract TikTok URL from any text ───────────────
+function extractTikTokUrl(text) {
+  if (!text) return null;
+  const patterns = [
+    /https?:\/\/(?:www\.)?tiktok\.com\/[^\s]+/i,
+    /https?:\/\/vm\.tiktok\.com\/[^\s]+/i,
+    /https?:\/\/m\.tiktok\.com\/[^\s]+/i,
+    /https?:\/\/vt\.tiktok\.com\/[^\s]+/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[0].trim();
+  }
+  return null;
+}
 
 // ── Main Tab Navigator ─────────────────────────────────────
 function MainTabs() {
@@ -63,13 +79,14 @@ function MainTabs() {
         tabBarLabelStyle: { fontSize: 10, fontFamily: 'SpaceMono_400Regular', marginTop: 2 },
         tabBarIcon: ({ color, size, focused }) => {
           const icons = {
-            Feed:        focused ? 'flash'        : 'flash-outline',
-            Trending:    focused ? 'trending-up'  : 'trending-up-outline',
-            Results:     focused ? 'trophy'       : 'trophy-outline',
-            Leaderboard: focused ? 'podium'       : 'podium-outline',
-            Profile:     focused ? 'person'       : 'person-outline',
+            Feed:        ['flash',       'flash-outline'],
+            Trending:    ['trending-up', 'trending-up-outline'],
+            Results:     ['trophy',      'trophy-outline'],
+            Leaderboard: ['podium',      'podium-outline'],
+            Profile:     ['person',      'person-outline'],
           };
-          return <Ionicons name={icons[route.name]} size={size} color={color} />;
+          const [activeIcon, inactiveIcon] = icons[route.name] || ['ellipse', 'ellipse-outline'];
+          return <Ionicons name={focused ? activeIcon : inactiveIcon} size={size} color={color} />;
         },
       })}
     >
@@ -84,24 +101,63 @@ function MainTabs() {
 
 // ── Share Intent Handler ───────────────────────────────────
 function ShareIntentHandler() {
-  const { shareIntent, resetShareIntent } = useShareIntent();
+  const handled = React.useRef(null);
+
+  let useShareIntent = null;
+  try {
+    useShareIntent = require('expo-share-intent').useShareIntent;
+  } catch (_) {}
+
+  const shareIntentHook = useShareIntent ? useShareIntent() : null;
 
   useEffect(() => {
-    if (!shareIntent) return;
+    if (!shareIntentHook?.shareIntent) return;
+    const { shareIntent, resetShareIntent } = shareIntentHook;
+
     let sharedUrl = null;
-    if (shareIntent.type === 'text' && shareIntent.text) {
-      const m = shareIntent.text.match(/https?:\/\/[^\s]*tiktok[^\s]*/i)
-             || shareIntent.text.match(/https?:\/\/vm\.tiktok[^\s]*/i)
-             || shareIntent.text.match(/https?:\/\/[^\s]+/);
-      if (m) sharedUrl = m[0].trim();
-    } else if (shareIntent.type === 'url' && shareIntent.text) {
-      sharedUrl = shareIntent.text.trim();
+    if (shareIntent.type === 'text' || shareIntent.type === 'url') {
+      sharedUrl = extractTikTokUrl(shareIntent.text || '');
     }
-    if (sharedUrl && navigationRef.isReady()) {
-      navigationRef.navigate('Submit', { sharedUrl });
+
+    if (sharedUrl && sharedUrl !== handled.current) {
+      handled.current = sharedUrl;
+      setTimeout(() => {
+        if (navigationRef.isReady()) {
+          navigationRef.navigate('Submit', { sharedUrl });
+        }
+      }, 300);
     }
+
     resetShareIntent();
-  }, [shareIntent]);
+  }, [shareIntentHook?.shareIntent]);
+
+  // Method 2: Deep link fallback (bettok://submit?url=...)
+  useEffect(() => {
+    const handleUrl = ({ url }) => {
+      if (!url) return;
+      try {
+        const parsed = new URL(url);
+        if (parsed.pathname === '/submit' || parsed.host === 'submit') {
+          const tiktokUrl = parsed.searchParams.get('url');
+          if (tiktokUrl && navigationRef.isReady()) {
+            setTimeout(() => {
+              navigationRef.navigate('Submit', { sharedUrl: tiktokUrl });
+            }, 300);
+          }
+        }
+        if (parsed.pathname === '/reset-password' || parsed.host === 'reset-password') {
+          if (navigationRef.isReady()) {
+            navigationRef.navigate('ResetPassword');
+          }
+        }
+      } catch (_) {}
+    };
+
+    Linking.getInitialURL().then(url => { if (url) handleUrl({ url }); });
+
+    const sub = Linking.addEventListener('url', handleUrl);
+    return () => sub?.remove();
+  }, []);
 
   return null;
 }
@@ -117,7 +173,9 @@ async function registerPushToken() {
     }
     if (finalStatus !== 'granted') return;
     const tokenData = await Notifications.getExpoPushTokenAsync();
-    await callApi('/registerPushToken', { token: tokenData.data });
+    if (tokenData?.data) {
+      await callApi('/registerPushToken', { token: tokenData.data });
+    }
   } catch (_) {}
 }
 
@@ -159,6 +217,7 @@ function RootNavigator() {
             <Stack.Screen name="Submit" component={SubmitVideoScreen}  options={{ presentation: 'modal' }} />
             <Stack.Screen name="Video"  component={VideoScreen}        options={{ presentation: 'modal' }} />
             <Stack.Screen name="Legal"  component={LegalScreen}        options={{ presentation: 'modal' }} />
+            <Stack.Screen name="Admin"  component={AdminScreen}        options={{ presentation: 'modal' }} />
           </>
         )}
       </Stack.Navigator>
@@ -173,6 +232,8 @@ const linking = {
     screens: {
       Auth:          'auth',
       ResetPassword: 'reset-password',
+      Submit:        'submit',
+      Legal:         'legal',
       Main: {
         screens: {
           Feed:        'feed',
@@ -182,19 +243,19 @@ const linking = {
           Profile:     'profile',
         },
       },
-      Submit: 'submit',
-      Legal:  'legal',
     },
   },
 };
 
 // ── Root App ───────────────────────────────────────────────
 export default function App() {
-	const [fontsLoaded] = useFonts({
-	Oswald_600SemiBold,
-	SpaceMono_400Regular,
-	});
-	if (!fontsLoaded) return null;
+  const [fontsLoaded] = useFonts({
+    Oswald_600SemiBold,
+    SpaceMono_400Regular,
+  });
+
+  if (!fontsLoaded) return null;
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>

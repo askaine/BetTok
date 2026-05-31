@@ -79,53 +79,69 @@ export default function AuthScreen() {
   };
 
   const handleSubmit = async () => {
-    if (!email.trim() || !password) {
-      setModal({ visible: true, type: 'error', title: 'Missing fields', message: 'Please fill in all fields.' });
+  if (!email.trim() || !password) {
+    setModal({ visible: true, type: 'error', title: 'Missing fields', message: 'Please fill in all fields.' });
+    return;
+  }
+  
+  if (mode === 'register') {
+    if (!username.trim()) {
+      setModal({ visible: true, type: 'error', title: 'Username required', message: 'Choose a username.' });
       return;
     }
-    if (mode === 'register') {
-      if (!username.trim()) {
-        setModal({ visible: true, type: 'error', title: 'Username required', message: 'Choose a username.' });
-        return;
-      }
-      if (usernameStatus === 'taken') {
-        setModal({ visible: true, type: 'error', title: 'Username taken', message: 'That username is already in use. Try another.' });
-        return;
-      }
-      if (usernameStatus === 'invalid') {
-        setModal({ visible: true, type: 'error', title: 'Invalid username', message: '3–20 characters, letters, numbers, and underscores only.' });
-        return;
-      }
-      if (password.length < 6) {
-        setModal({ visible: true, type: 'error', title: 'Password too short', message: 'Minimum 6 characters.' });
-        return;
-      }
-      if (!agreedToTerms) {
-        setModal({ visible: true, type: 'warning', title: 'Please agree', message: 'You must agree to the Terms of Service and Privacy Policy to continue.' });
-        return;
-      }
+    if (usernameStatus === 'taken') {
+      setModal({ visible: true, type: 'error', title: 'Username taken', message: 'That username is already in use. Try another.' });
+      return;
+    }
+    if (usernameStatus === 'invalid') {
+      setModal({ visible: true, type: 'error', title: 'Invalid username', message: '3–20 characters, letters, numbers, and underscores only.' });
+      return;
+    }
+    if (password.length < 6) {
+      setModal({ visible: true, type: 'error', title: 'Password too short', message: 'Minimum 6 characters.' });
+      return;
+    }
+    if (!agreedToTerms) {
+      setModal({ visible: true, type: 'warning', title: 'Please agree', message: 'You must agree to the Terms of Service and Privacy Policy to continue.' });
+      return;
     }
 
-    setLoading(true);
     try {
-      if (mode === 'login') {
-        await login(email.trim(), password);
-      } else {
-        await register(email.trim(), password, username.trim());
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setVerificationSent(true);
+      const emailCheck = await getApi('/checkUsername', { email: email.trim() });
+      if (!emailCheck.available) {
+        setModal({ 
+          visible: true, 
+          type: 'error', 
+          title: 'Email taken', 
+          message: 'That email is already registered to an account.' 
+        });
+        return;
       }
-    } catch (err) {
-      const msg =
-        err.message?.includes('Email not confirmed') ? 'Please verify your email first. Check your inbox.'
-        : err.message?.includes('Invalid login') || err.message?.includes('Invalid email or password') ? 'Wrong email or password.'
-        : err.message?.includes('already registered') || err.message?.includes('already been registered') ? 'That email is already registered.'
-        : err.message || 'Something went wrong.';
-      setModal({ visible: true, type: 'error', title: 'Error', message: msg });
-    } finally {
-      setLoading(false);
+    } catch (_) {
+      // Ignore API check errors or handle silently
     }
-  };
+  } // <-- This closes the `if (mode === 'register')` block cleanly
+
+  setLoading(true);
+  try {
+    if (mode === 'login') {
+      await login(email.trim(), password);
+    } else {
+      await register(email.trim(), password, username.trim());
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setVerificationSent(true);
+    }
+  } catch (err) {
+    const msg =
+      err.message?.includes('Email not confirmed') ? 'Please verify your email first. Check your inbox.'
+      : err.message?.includes('Invalid login') || err.message?.includes('Invalid email or password') ? 'Wrong email or password.'
+      : err.message?.includes('already registered') || err.message?.includes('already been registered') ? 'That email is already registered.'
+      : err.message || 'Something went wrong.';
+    setModal({ visible: true, type: 'error', title: 'Error', message: msg });
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleResend = async () => {
     if (!email.trim()) {

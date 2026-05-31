@@ -1,51 +1,50 @@
 // screens/FeedScreen.js
+// Fixes: correct video aspect ratio (no cropping), fullscreen button, share intent
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
   ActivityIndicator, RefreshControl, Animated,
-  Pressable, Share, Platform,
+  Pressable, Share, Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Video, ResizeMode } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
 import { getApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING, SHADOW } from '../theme';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+// 9:16 aspect ratio — standard TikTok portrait
+const VIDEO_HEIGHT = Math.round(SCREEN_W * (16 / 9));
+// Cap at 70% of screen height so bet buttons remain visible
+const CAPPED_VIDEO_HEIGHT = Math.min(VIDEO_HEIGHT, Math.round(SCREEN_H * 0.55));
+
 // ── Streak Banner ──────────────────────────────────────────
 function StreakBanner({ streak, sparks, onDailyBonus }) {
   const pulse = useRef(new Animated.Value(1)).current;
-
   useEffect(() => {
     if (streak > 0) {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulse, { toValue: 1.08, duration: 900, useNativeDriver: true }),
-          Animated.timing(pulse, { toValue: 1,    duration: 900, useNativeDriver: true }),
-        ])
-      ).start();
+      Animated.loop(Animated.sequence([
+        Animated.timing(pulse, { toValue: 1.08, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1,    duration: 900, useNativeDriver: true }),
+      ])).start();
     }
   }, [streak]);
 
   return (
     <View style={styles.streakBanner}>
-      {/* Streak */}
       <Animated.View style={[styles.streakPill, { transform: [{ scale: pulse }] }]}>
         <Text style={styles.streakFire}>🔥</Text>
         <Text style={styles.streakNum}>{streak}</Text>
         <Text style={styles.streakLabel}>day streak</Text>
       </Animated.View>
-
-      {/* Sparks */}
       <View style={styles.sparksPill}>
         <Text style={styles.sparksIcon}>⚡</Text>
         <Text style={styles.sparksNum}>{sparks?.toLocaleString() ?? '—'}</Text>
       </View>
-
-      {/* Daily bonus */}
       <Pressable style={styles.bonusBtn} onPress={onDailyBonus}>
         <Ionicons name="gift-outline" size={14} color={COLORS.spark} />
         <Text style={styles.bonusBtnLabel}>Daily</Text>
@@ -55,12 +54,15 @@ function StreakBanner({ streak, sparks, onDailyBonus }) {
 }
 
 // ── Video Player ───────────────────────────────────────────
-function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
+// containMode = true  → letterboxed, shows full video, no cropping
+// containMode = false → cover, fills container (slight crop on sides)
+function VideoPlayer({ videoId, fallbackUrl, onFullscreen }) {
   const videoRef  = useRef(null);
   const hasLoaded = useRef(false);
   const [isPlaying,   setIsPlaying]   = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [fetchingUrl, setFetchingUrl] = useState(false);
+  const [useContain,  setUseContain]  = useState(false); // contain = no crop
 
   const togglePlay = async () => {
     if (!videoRef.current) return;
@@ -98,67 +100,73 @@ function VideoPlayer({ videoId, fallbackUrl, thumbnail }) {
   };
 
   return (
-    <Pressable style={styles.videoContainer} onPress={togglePlay}>
-      <Video
-        ref={videoRef}
-        style={styles.video}
-        useNativeControls={false}
-        resizeMode={ResizeMode.COVER}
-        shouldPlay={false}
-        isMuted={false}
-        volume={1.0}
-        onPlaybackStatusUpdate={onStatus}
-      />
+    <View style={styles.videoWrapper}>
+      <Pressable style={styles.videoContainer} onPress={togglePlay}>
+        <Video
+          ref={videoRef}
+          style={styles.video}
+          useNativeControls={false}
+          resizeMode={useContain ? ResizeMode.CONTAIN : ResizeMode.COVER}
+          shouldPlay={false}
+          isMuted={false}
+          volume={1.0}
+          onPlaybackStatusUpdate={onStatus}
+        />
 
-      {/* Thumbnail overlay when not playing */}
-      {!isPlaying && thumbnail && (
-        <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
-          {/* We use the Video component itself, thumbnail is just bg color fallback */}
-        </View>
-      )}
-
-      {(fetchingUrl || isBuffering) && (
-        <View style={styles.videoOverlay} pointerEvents="none">
-          <ActivityIndicator color="#fff" size="large" />
-          {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
-        </View>
-      )}
-
-      {!isPlaying && !fetchingUrl && !isBuffering && (
-        <View style={styles.videoOverlay} pointerEvents="none">
-          <View style={styles.playBtn}>
-            <Ionicons name="play" size={28} color="#fff" />
+        {(fetchingUrl || isBuffering) && (
+          <View style={styles.videoOverlay} pointerEvents="none">
+            <ActivityIndicator color="#fff" size="large" />
+            {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
           </View>
-          <Text style={styles.videoHint}>Tap to play</Text>
-        </View>
-      )}
+        )}
 
-      {isPlaying && (
-        <View style={styles.audioIndicator} pointerEvents="none">
-          <Ionicons name="volume-high" size={13} color="#fff" />
-        </View>
-      )}
-    </Pressable>
+        {!isPlaying && !fetchingUrl && !isBuffering && (
+          <View style={styles.videoOverlay} pointerEvents="none">
+            <View style={styles.playBtn}>
+              <Ionicons name="play" size={30} color="#fff" />
+            </View>
+            <Text style={styles.videoHint}>Tap to play</Text>
+          </View>
+        )}
+
+        {isPlaying && (
+          <View style={styles.audioIndicator} pointerEvents="none">
+            <Ionicons name="volume-high" size={13} color="#fff" />
+          </View>
+        )}
+      </Pressable>
+
+      {/* Controls overlay (top-right) */}
+      <View style={styles.videoControls}>
+        {/* Fit / Fill toggle */}
+        <Pressable
+          style={styles.videoControlBtn}
+          onPress={() => setUseContain(c => !c)}
+          hitSlop={8}
+        >
+          <Ionicons name={useContain ? 'scan-outline' : 'contract-outline'} size={16} color="#fff" />
+        </Pressable>
+        {/* Fullscreen */}
+        <Pressable style={styles.videoControlBtn} onPress={onFullscreen} hitSlop={8}>
+          <Ionicons name="expand-outline" size={16} color="#fff" />
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
 // ── Video Card ─────────────────────────────────────────────
-function VideoCard({ video, onBet }) {
+function VideoCard({ video, onBet, onFullscreen }) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.97)).current;
-
   useEffect(() => {
-    Animated.parallel([
-      Animated.timing(fadeAnim,  { toValue: 1, duration: 350, useNativeDriver: true }),
-      Animated.spring(scaleAnim, { toValue: 1, tension: 80, friction: 10, useNativeDriver: true }),
-    ]).start();
+    Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
   }, []);
 
   const timeLeft    = getTimeLeft(video.resolution_deadline ? new Date(video.resolution_deadline) : new Date());
   const uploadedAgo = video.uploaded_at ? getTimeAgo(new Date(video.uploaded_at)) : null;
-  const yesOdds     = video.odds?.yes     || 2.0;
-  const noOdds      = video.odds?.no      || 2.0;
-  const yesProb     = video.odds?.yesProb || 50;
+  const yesOdds     = video.odds?.yes     ?? 2.0;
+  const noOdds      = video.odds?.no      ?? 2.0;
+  const yesProb     = video.odds?.yesProb ?? 50;
   const isHot       = (video.total_bets || 0) >= 10;
 
   const handleBet = async (side) => {
@@ -168,21 +176,13 @@ function VideoCard({ video, onBet }) {
 
   const handleShare = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await Share.share({
-      message: `🔥 Will this TikTok go viral? I'm predicting on BetTok!\n${video.tiktok_url || 'https://bettok.app'}`,
-    });
+    await Share.share({ message: `🔥 Will this TikTok go viral? Predict on BetTok!\n${video.tiktok_url || 'https://bettok.app'}` });
   };
 
   return (
-    <Animated.View style={[styles.card, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
-      {/* Hot badge */}
-      {isHot && (
-        <View style={styles.hotBadge}>
-          <Text style={styles.hotBadgeText}>🔥 HOT</Text>
-        </View>
-      )}
+    <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
+      {isHot && <View style={styles.hotBadge}><Text style={styles.hotBadgeText}>🔥 HOT</Text></View>}
 
-      {/* Header */}
       <View style={styles.cardHeader}>
         <View style={styles.metaLeft}>
           <View style={styles.anonDot} />
@@ -193,14 +193,13 @@ function VideoCard({ video, onBet }) {
           <Pressable onPress={handleShare} hitSlop={10} style={styles.shareBtn}>
             <Ionicons name="share-social-outline" size={18} color={COLORS.muted} />
           </Pressable>
-          <View style={[styles.timerBadge, timeLeft === 'Resolving...' && styles.timerBadgeExpired]}>
+          <View style={styles.timerBadge}>
             <Ionicons name="time-outline" size={10} color={COLORS.accent} />
             <Text style={styles.timerText}>{timeLeft}</Text>
           </View>
         </View>
       </View>
 
-      {/* Likes at submission */}
       {video.likes_at_ingestion != null && (
         <View style={styles.likesRow}>
           <Ionicons name="heart" size={10} color={COLORS.accent} />
@@ -208,14 +207,13 @@ function VideoCard({ video, onBet }) {
         </View>
       )}
 
-      {/* Video */}
       <VideoPlayer
         videoId={video.id}
         fallbackUrl={video.direct_video_url}
-        thumbnail={video.thumbnail_url}
+        onFullscreen={() => onFullscreen(video)}
       />
 
-      {/* Market odds bar */}
+      {/* Odds bar */}
       <View style={styles.oddsSection}>
         <View style={styles.oddsBar}>
           <View style={[styles.oddsYes, { flex: yesProb }]} />
@@ -227,25 +225,22 @@ function VideoCard({ video, onBet }) {
         </View>
       </View>
 
-      {/* Crowd activity */}
       <View style={styles.crowdRow}>
         <Ionicons name="people-outline" size={11} color={COLORS.muted} />
         <Text style={styles.crowdText}>{video.noisy_bet_range} predictions placed</Text>
       </View>
 
-      {/* Bet buttons */}
       <View style={styles.betRow}>
         <Pressable
           style={({ pressed }) => [styles.betBtnViral, pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }]}
           onPress={() => handleBet('yes')}
         >
-          <LinearGradient colors={['#00E87A', '#00A855']} style={styles.betBtnGradient} start={[0,0]} end={[1,0]}>
+          <LinearGradient colors={['#00E87A','#00A855']} style={styles.betBtnGrad} start={[0,0]} end={[1,0]}>
             <Ionicons name="trending-up" size={16} color="#000" />
             <Text style={styles.betBtnViralLabel}>GOES VIRAL</Text>
             <Text style={styles.betBtnOdds}>{yesOdds.toFixed(2)}×</Text>
           </LinearGradient>
         </Pressable>
-
         <Pressable
           style={({ pressed }) => [styles.betBtnFlop, pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }]}
           onPress={() => handleBet('no')}
@@ -263,22 +258,22 @@ function VideoCard({ video, onBet }) {
 
 // ── Feed Screen ────────────────────────────────────────────
 export default function FeedScreen() {
-  const navigation  = useNavigation();
-  const { user }    = useAuth();
+  const navigation = useNavigation();
+  const { user }   = useAuth();
   const [videos,     setVideos]     = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [profile,    setProfile]    = useState(null);
-  const [claimMsg,   setClaimMsg]   = useState(null);
+  const [toastMsg,   setToastMsg]   = useState(null);
 
   const loadFeed = useCallback(async () => {
     setError(null);
     try {
-      const result = await getApi('/feed');
-      setVideos(result.videos || []);
+      const r = await getApi('/feed');
+      setVideos(r.videos || []);
     } catch (err) {
-      setError('Could not load. Check your connection.');
+      setError('Could not load. Pull down to retry.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -292,22 +287,22 @@ export default function FeedScreen() {
     } catch (_) {}
   }, []);
 
-  useFocusEffect(useCallback(() => {
-    loadFeed();
-    loadProfile();
-  }, []));
+  useFocusEffect(useCallback(() => { loadFeed(); loadProfile(); }, []));
+
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 2500);
+  };
 
   const handleDailyBonus = async () => {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     try {
       const { callApi } = require('../Supabaseconfig');
       const r = await callApi('/claimDailyBonus', {});
-      setClaimMsg(`+${r.awarded} Sparks! 🎉`);
+      showToast(`+${r.awarded} Sparks! 🔥 ${r.newStreak}d streak`);
       loadProfile();
-      setTimeout(() => setClaimMsg(null), 2500);
     } catch (err) {
-      setClaimMsg(err.message || 'Come back tomorrow!');
-      setTimeout(() => setClaimMsg(null), 2500);
+      showToast(err.message || 'Come back tomorrow!');
     }
   };
 
@@ -322,13 +317,13 @@ export default function FeedScreen() {
 
   if (error) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.center}>
           <Text style={{ fontSize: 40 }}>📡</Text>
-          <Text style={styles.errorTitle}>Connection lost</Text>
+          <Text style={styles.errorTitle}>Connection problem</Text>
           <Text style={styles.errorText}>{error}</Text>
           <Pressable style={styles.retryBtn} onPress={() => { setLoading(true); loadFeed(); }}>
-            <Ionicons name="refresh" size={16} color="#000" />
+            <Ionicons name="refresh" size={16} color="#fff" />
             <Text style={styles.retryLabel}>Retry</Text>
           </Pressable>
         </View>
@@ -341,10 +336,17 @@ export default function FeedScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerLogo}>BetTok</Text>
-        <TouchableOpacity style={styles.submitBtn} onPress={() => navigation.navigate('Submit')}>
-          <Ionicons name="add" size={16} color="#000" />
-          <Text style={styles.submitBtnLabel}>Submit</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          {profile?.is_admin && (
+            <TouchableOpacity style={styles.adminBtn} onPress={() => navigation.navigate('Admin')}>
+              <Text style={styles.adminBtnLabel}>👑</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.submitBtn} onPress={() => navigation.navigate('Submit')}>
+            <Ionicons name="add" size={16} color="#000" />
+            <Text style={styles.submitBtnLabel}>Submit</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Streak banner */}
@@ -354,10 +356,10 @@ export default function FeedScreen() {
         onDailyBonus={handleDailyBonus}
       />
 
-      {/* Claim message toast */}
-      {claimMsg && (
+      {/* Toast */}
+      {toastMsg && (
         <View style={styles.toast}>
-          <Text style={styles.toastText}>{claimMsg}</Text>
+          <Text style={styles.toastText}>{toastMsg}</Text>
         </View>
       )}
 
@@ -368,6 +370,7 @@ export default function FeedScreen() {
           <VideoCard
             video={item}
             onBet={(v, s) => navigation.navigate('Bet', { video: v, suggestedSide: s })}
+            onFullscreen={(v) => navigation.navigate('Video', { video: v })}
           />
         )}
         contentContainerStyle={[styles.list, videos.length === 0 && { flexGrow: 1 }]}
@@ -383,9 +386,9 @@ export default function FeedScreen() {
           <View style={styles.empty}>
             <Text style={{ fontSize: 56 }}>🎬</Text>
             <Text style={styles.emptyTitle}>No videos yet</Text>
-            <Text style={styles.emptyText}>Be the first to submit a TikTok to the pool</Text>
+            <Text style={styles.emptyText}>Be the first to submit a TikTok to the prediction pool!</Text>
             <Pressable style={styles.emptyBtn} onPress={() => navigation.navigate('Submit')}>
-              <LinearGradient colors={['#FF3B5C', '#CC1F3F']} style={styles.emptyBtnGrad} start={[0,0]} end={[1,0]}>
+              <LinearGradient colors={['#FF3B5C','#CC1F3F']} style={styles.emptyBtnGrad} start={[0,0]} end={[1,0]}>
                 <Ionicons name="add-circle" size={18} color="#fff" />
                 <Text style={styles.emptyBtnLabel}>Submit a Video</Text>
               </LinearGradient>
@@ -399,18 +402,18 @@ export default function FeedScreen() {
 
 function getTimeLeft(d) {
   const ms = d - Date.now();
-  if (ms <= 0) return 'Resolving...';
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
+  if (ms <= 0) return 'Resolving…';
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
   const day = Math.floor(h / 24);
   if (day > 0) return `${day}d ${h % 24}h`;
-  if (h > 0) return `${h}h ${m}m`;
+  if (h > 0)   return `${h}h ${m}m`;
   return `${m}m left`;
 }
 
 function getTimeAgo(d) {
   const ms = Date.now() - d;
-  const m = Math.floor(ms / 60000);
+  const m  = Math.floor(ms / 60_000);
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
@@ -418,88 +421,84 @@ function getTimeAgo(d) {
 }
 
 const styles = StyleSheet.create({
-  container:    { flex: 1, backgroundColor: COLORS.bg },
-  center:       { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg, gap: 12 },
-  loadingText:  { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13, marginTop: 8 },
-  errorTitle:   { color: COLORS.text, fontFamily: FONTS.display, fontSize: 22 },
-  errorText:    { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13, textAlign: 'center' },
-  retryBtn:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.accent, paddingHorizontal: 24, paddingVertical: 12, borderRadius: RADIUS.full },
-  retryLabel:   { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 13 },
+  container:     { flex: 1, backgroundColor: COLORS.bg },
+  center:        { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg, gap: 12 },
+  loadingText:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13, marginTop: 8 },
+  errorTitle:    { color: COLORS.text, fontFamily: FONTS.display, fontSize: 22 },
+  errorText:     { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13, textAlign: 'center' },
+  retryBtn:      { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.accent, paddingHorizontal: 24, paddingVertical: 12, borderRadius: RADIUS.full },
+  retryLabel:    { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 13 },
 
-  // Header
-  header:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  headerLogo:   { color: COLORS.accent, fontFamily: FONTS.display, fontSize: 26, letterSpacing: 2 },
-  submitBtn:    { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.full },
+  header:        { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.md, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  headerLogo:    { color: COLORS.accent, fontFamily: FONTS.display, fontSize: 26, letterSpacing: 2 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  adminBtn:      { width: 36, height: 36, borderRadius: 18, backgroundColor: COLORS.surfaceHigh, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: COLORS.accent + '44' },
+  adminBtnLabel: { fontSize: 18 },
+  submitBtn:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.accent, paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.full },
   submitBtnLabel: { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 13 },
 
-  // Streak banner
-  streakBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.md, paddingVertical: 10, backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  streakPill:   { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.purpleGlow, borderWidth: 1, borderColor: COLORS.purple + '44', paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full },
-  streakFire:   { fontSize: 16 },
-  streakNum:    { color: COLORS.purple, fontFamily: FONTS.display, fontSize: 18 },
-  streakLabel:  { color: COLORS.purple, fontFamily: FONTS.body, fontSize: 10 },
-  sparksPill:   { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.sparkGlow, borderWidth: 1, borderColor: COLORS.spark + '44', paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full },
-  sparksIcon:   { fontSize: 14 },
-  sparksNum:    { color: COLORS.spark, fontFamily: FONTS.display, fontSize: 16 },
-  bonusBtn:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.sparkGlow, borderWidth: 1, borderColor: COLORS.spark + '44', paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full },
+  streakBanner:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: SPACING.md, paddingVertical: 10, backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  streakPill:    { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.purpleGlow, borderWidth: 1, borderColor: COLORS.purple + '44', paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full },
+  streakFire:    { fontSize: 16 },
+  streakNum:     { color: COLORS.purple, fontFamily: FONTS.display, fontSize: 18 },
+  streakLabel:   { color: COLORS.purple, fontFamily: FONTS.body, fontSize: 10 },
+  sparksPill:    { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.sparkGlow, borderWidth: 1, borderColor: COLORS.spark + '44', paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full },
+  sparksIcon:    { fontSize: 14 },
+  sparksNum:     { color: COLORS.spark, fontFamily: FONTS.display, fontSize: 16 },
+  bonusBtn:      { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.sparkGlow, borderWidth: 1, borderColor: COLORS.spark + '44', paddingHorizontal: 12, paddingVertical: 6, borderRadius: RADIUS.full },
   bonusBtnLabel: { color: COLORS.spark, fontFamily: FONTS.body, fontSize: 11, fontWeight: '700' },
 
-  // Toast
-  toast:        { position: 'absolute', top: 120, left: 20, right: 20, zIndex: 99, backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.md, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: COLORS.spark + '66' },
-  toastText:    { color: COLORS.spark, fontFamily: FONTS.display, fontSize: 15 },
+  toast:         { position: 'absolute', top: 120, left: 20, right: 20, zIndex: 99, backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.md, padding: 12, alignItems: 'center', borderWidth: 1, borderColor: COLORS.spark + '66' },
+  toastText:     { color: COLORS.spark, fontFamily: FONTS.display, fontSize: 15 },
 
-  // List
-  list:         { padding: SPACING.md, gap: SPACING.sm, paddingBottom: 100 },
+  list:          { padding: SPACING.md, gap: SPACING.sm, paddingBottom: 100 },
 
-  // Card
-  card:         { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border, ...SHADOW.card },
-  hotBadge:     { position: 'absolute', top: 0, left: 0, zIndex: 10, backgroundColor: COLORS.accent, paddingHorizontal: 10, paddingVertical: 4, borderBottomRightRadius: RADIUS.md },
-  hotBadgeText: { color: '#fff', fontFamily: FONTS.body, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
-  cardHeader:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.md, paddingTop: 14, paddingBottom: 8 },
-  metaLeft:     { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
-  anonDot:      { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.muted },
-  anonLabel:    { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 12, fontStyle: 'italic' },
-  uploadedAgo:  { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
-  headerRight:  { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  shareBtn:     { padding: 4 },
-  timerBadge:   { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.accentGlow, borderWidth: 1, borderColor: COLORS.accent + '44', paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.full },
-  timerBadgeExpired: { backgroundColor: COLORS.surfaceHigh, borderColor: COLORS.muted },
-  timerText:    { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 10, fontWeight: '700' },
-  likesRow:     { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.md, paddingBottom: 8 },
-  likesText:    { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
+  card:          { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border, ...SHADOW.card },
+  hotBadge:      { position: 'absolute', top: 0, left: 0, zIndex: 10, backgroundColor: COLORS.accent, paddingHorizontal: 10, paddingVertical: 4, borderBottomRightRadius: RADIUS.md },
+  hotBadgeText:  { color: '#fff', fontFamily: FONTS.body, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+  cardHeader:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: SPACING.md, paddingTop: 14, paddingBottom: 8 },
+  metaLeft:      { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  anonDot:       { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.muted },
+  anonLabel:     { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 12, fontStyle: 'italic' },
+  uploadedAgo:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
+  headerRight:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  shareBtn:      { padding: 4 },
+  timerBadge:    { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.accentGlow, borderWidth: 1, borderColor: COLORS.accent + '44', paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.full },
+  timerText:     { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 10, fontWeight: '700' },
+  likesRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.md, paddingBottom: 8 },
+  likesText:     { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
 
-  // Video
-  videoContainer: { width: '100%', height: 460, backgroundColor: '#000' },
-  video:          { flex: 1 },
-  videoOverlay:   { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.15)' },
-  playBtn:        { width: 68, height: 68, borderRadius: 34, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', paddingLeft: 4 },
-  videoHint:      { color: 'rgba(255,255,255,0.6)', fontFamily: FONTS.body, fontSize: 12 },
-  audioIndicator: { position: 'absolute', bottom: 10, right: 10, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 12, padding: 6 },
+  // VIDEO — fixed: uses contain mode option + capped height
+  videoWrapper:    { position: 'relative', backgroundColor: '#000' },
+  videoContainer:  { width: '100%', height: CAPPED_VIDEO_HEIGHT, backgroundColor: '#000' },
+  video:           { flex: 1 },
+  videoOverlay:    { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.08)' },
+  playBtn:         { width: 66, height: 66, borderRadius: 33, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', paddingLeft: 3 },
+  videoHint:       { color: 'rgba(255,255,255,0.55)', fontFamily: FONTS.body, fontSize: 12 },
+  audioIndicator:  { position: 'absolute', bottom: 10, right: 46, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 12, padding: 6 },
+  videoControls:   { position: 'absolute', top: 8, right: 8, gap: 6 },
+  videoControlBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center' },
 
-  // Odds
   oddsSection:  { paddingHorizontal: SPACING.md, paddingTop: 12, paddingBottom: 4, gap: 6 },
   oddsBar:      { flexDirection: 'row', height: 4, borderRadius: 2, overflow: 'hidden', backgroundColor: COLORS.surfaceHigh },
   oddsYes:      { backgroundColor: COLORS.yes },
   oddsNo:       { backgroundColor: COLORS.accent },
   oddsLabels:   { flexDirection: 'row', justifyContent: 'space-between' },
-  oddsLabelYes: { color: COLORS.yes, fontFamily: FONTS.body, fontSize: 11, fontWeight: '700' },
+  oddsLabelYes: { color: COLORS.yes,    fontFamily: FONTS.body, fontSize: 11, fontWeight: '700' },
   oddsLabelNo:  { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 11, fontWeight: '700' },
 
-  // Crowd
   crowdRow:     { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: SPACING.md, paddingVertical: 6 },
   crowdText:    { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
 
-  // Bet buttons
   betRow:          { flexDirection: 'row', gap: SPACING.sm, padding: SPACING.md, paddingTop: 8 },
   betBtnViral:     { flex: 1, borderRadius: RADIUS.md, overflow: 'hidden' },
-  betBtnGradient:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14 },
+  betBtnGrad:      { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14 },
   betBtnViralLabel: { color: '#000', fontFamily: FONTS.body, fontWeight: '700', fontSize: 13, letterSpacing: 0.5 },
   betBtnOdds:      { color: '#000', fontFamily: FONTS.display, fontSize: 14 },
-  betBtnFlop:      { flex: 1, borderRadius: RADIUS.md, borderWidth: 1.5, borderColor: COLORS.accent + '66', overflow: 'hidden' },
+  betBtnFlop:      { flex: 1, borderRadius: RADIUS.md, borderWidth: 1.5, borderColor: COLORS.accent + '66' },
   betBtnFlopInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 14 },
   betBtnFlopLabel: { color: COLORS.accent, fontFamily: FONTS.body, fontWeight: '700', fontSize: 13, letterSpacing: 0.5 },
 
-  // Empty
   empty:         { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 80 },
   emptyTitle:    { color: COLORS.text, fontFamily: FONTS.display, fontSize: 24 },
   emptyText:     { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13, textAlign: 'center', paddingHorizontal: 32 },
