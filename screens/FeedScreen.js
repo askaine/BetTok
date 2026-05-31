@@ -1,10 +1,9 @@
 // screens/FeedScreen.js
-// Fixes: correct video aspect ratio (no cropping), fullscreen button, share intent
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
   ActivityIndicator, RefreshControl, Animated,
-  Pressable, Share, Dimensions,
+  Pressable, Share, Dimensions, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Video, ResizeMode } from 'expo-av';
@@ -16,11 +15,7 @@ import { COLORS, FONTS, RADIUS, SPACING, SHADOW } from '../theme';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
 
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-// 9:16 aspect ratio — standard TikTok portrait
-const VIDEO_HEIGHT = Math.round(SCREEN_W * (16 / 9));
-// Cap at 70% of screen height so bet buttons remain visible
-const CAPPED_VIDEO_HEIGHT = Math.min(VIDEO_HEIGHT, Math.round(SCREEN_H * 0.55));
+const { width: SCREEN_W } = Dimensions.get('window');
 
 // ── Streak Banner ──────────────────────────────────────────
 function StreakBanner({ streak, sparks, onDailyBonus }) {
@@ -54,109 +49,141 @@ function StreakBanner({ streak, sparks, onDailyBonus }) {
 }
 
 // ── Video Player ───────────────────────────────────────────
-// containMode = true  → letterboxed, shows full video, no cropping
-// containMode = false → cover, fills container (slight crop on sides)
-function VideoPlayer({ videoId, fallbackUrl, onFullscreen }) {
+function VideoPlayer({ videoId, fallbackUrl }) {
   const videoRef  = useRef(null);
-  const hasLoaded = useRef(false);
   const [isPlaying,   setIsPlaying]   = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [fetchingUrl, setFetchingUrl] = useState(false);
-  const [useContain,  setUseContain]  = useState(false); // contain = no crop
+  const [videoUri,    setVideoUri]    = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [positionMillis, setPositionMillis] = useState(0);
+
+  // Resolves the playback URL from the backend if not already cached
+  const ensureUriLoaded = async () => {
+    if (videoUri) return videoUri;
+    setFetchingUrl(true);
+    let uri = fallbackUrl;
+    try {
+      const r = await getApi('/videoUrl', { id: videoId });
+      if (r?.url) uri = r.url;
+    } catch (_) {}
+    setVideoUri(uri);
+    setFetchingUrl(false);
+    return uri;
+  };
 
   const togglePlay = async () => {
-    if (!videoRef.current) return;
     if (isPlaying) {
-      await videoRef.current.pauseAsync();
       setIsPlaying(false);
       return;
     }
-    if (!hasLoaded.current) {
-      setFetchingUrl(true);
-      try {
-        let uri = fallbackUrl;
-        try {
-          const r = await getApi('/videoUrl', { id: videoId });
-          if (r?.url) uri = r.url;
-        } catch (_) {}
-        await videoRef.current.loadAsync({ uri }, {}, false);
-        hasLoaded.current = true;
-      } catch (e) {
-        setFetchingUrl(false);
-        return;
-      }
-      setFetchingUrl(false);
-    }
-    try {
-      await videoRef.current.playAsync();
-      setIsPlaying(true);
-    } catch (_) {}
+    await ensureUriLoaded();
+    setIsPlaying(true);
   };
 
   const onStatus = (s) => {
     if (!s.isLoaded) return;
     setIsBuffering(s.isBuffering && !s.isPlaying);
-    if (s.didJustFinish) { setIsPlaying(false); videoRef.current?.setPositionAsync(0); }
+    // Keep track of the current playback millisecond timestamp
+    setPositionMillis(s.positionMillis);
+    if (s.didJustFinish) { 
+      setIsPlaying(false); 
+      videoRef.current?.setPositionAsync(0);
+      setPositionMillis(0);
+    }
   };
+
+  const handleFullscreenEnter = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    await ensureUriLoaded();
+    setIsFullscreen(true);
+  };
+
+  const handleFullscreenExit = async () => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setIsFullscreen(false);
+  };
+
+  // Reusable player contents to ensure configuration alignment across views
+  const renderPlayer = (isModalView) => (
+    <Pressable 
+      style={isModalView ? styles.fullscreenPlayerContainer : styles.videoContainer} 
+      onPress={togglePlay}
+    >
+      <Video
+        ref={videoRef}
+        style={styles.video}
+        source={videoUri ? { uri: videoUri } : null}
+        useNativeControls={false}
+        resizeMode={isModalView ? ResizeMode.CONTAIN : ResizeMode.COVER}
+        shouldPlay={isPlaying}
+        initialStatus={{ positionMillis: positionMillis }}
+        isMuted={false}
+        volume={1.0}
+        onPlaybackStatusUpdate={onStatus}
+      />
+
+      {(fetchingUrl || isBuffering) && (
+        <View style={styles.videoOverlay} pointerEvents="none">
+          <ActivityIndicator color="#fff" size="large" />
+          {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
+        </View>
+      )}
+
+      {!isPlaying && !fetchingUrl && !isBuffering && (
+        <View style={styles.videoOverlay} pointerEvents="none">
+          <View style={styles.playBtn}>
+            <Ionicons name="play" size={30} color="#fff" />
+          </View>
+          <Text style={styles.videoHint}>Tap to play</Text>
+        </View>
+      )}
+
+      {isPlaying && !isModalView && (
+        <View style={styles.audioIndicator} pointerEvents="none">
+          <Ionicons name="volume-high" size={13} color="#fff" />
+        </View>
+      )}
+
+      {/* Floating Controls Overlay Area */}
+      <View style={styles.videoControls}>
+        {isModalView ? (
+          <Pressable style={styles.videoControlBtn} onPress={handleFullscreenExit} hitSlop={8}>
+            <Ionicons name="contract-outline" size={16} color="#fff" />
+          </Pressable>
+        ) : (
+          <Pressable style={styles.videoControlBtn} onPress={handleFullscreenEnter} hitSlop={8}>
+            <Ionicons name="expand-outline" size={16} color="#fff" />
+          </Pressable>
+        )}
+      </View>
+    </Pressable>
+  );
 
   return (
     <View style={styles.videoWrapper}>
-      <Pressable style={styles.videoContainer} onPress={togglePlay}>
-        <Video
-          ref={videoRef}
-          style={styles.video}
-          useNativeControls={false}
-          resizeMode={useContain ? ResizeMode.CONTAIN : ResizeMode.COVER}
-          shouldPlay={false}
-          isMuted={false}
-          volume={1.0}
-          onPlaybackStatusUpdate={onStatus}
-        />
+      {/* Inline feed configuration layer */}
+      {!isFullscreen ? renderPlayer(false) : (
+        <View style={styles.videoContainer} /> 
+      )}
 
-        {(fetchingUrl || isBuffering) && (
-          <View style={styles.videoOverlay} pointerEvents="none">
-            <ActivityIndicator color="#fff" size="large" />
-            {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
-          </View>
-        )}
-
-        {!isPlaying && !fetchingUrl && !isBuffering && (
-          <View style={styles.videoOverlay} pointerEvents="none">
-            <View style={styles.playBtn}>
-              <Ionicons name="play" size={30} color="#fff" />
-            </View>
-            <Text style={styles.videoHint}>Tap to play</Text>
-          </View>
-        )}
-
-        {isPlaying && (
-          <View style={styles.audioIndicator} pointerEvents="none">
-            <Ionicons name="volume-high" size={13} color="#fff" />
-          </View>
-        )}
-      </Pressable>
-
-      {/* Controls overlay (top-right) */}
-      <View style={styles.videoControls}>
-        {/* Fit / Fill toggle */}
-        <Pressable
-          style={styles.videoControlBtn}
-          onPress={() => setUseContain(c => !c)}
-          hitSlop={8}
-        >
-          <Ionicons name={useContain ? 'scan-outline' : 'contract-outline'} size={16} color="#fff" />
-        </Pressable>
-        {/* Fullscreen */}
-        <Pressable style={styles.videoControlBtn} onPress={onFullscreen} hitSlop={8}>
-          <Ionicons name="expand-outline" size={16} color="#fff" />
-        </Pressable>
-      </View>
+      {/* Immersive device-wide fullscreen view escape modal */}
+      <Modal
+        visible={isFullscreen}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={handleFullscreenExit}
+      >
+        <SafeAreaView style={styles.fullscreenModalBg}>
+          {isFullscreen && renderPlayer(true)}
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 }
 
 // ── Video Card ─────────────────────────────────────────────
-function VideoCard({ video, onBet, onFullscreen }) {
+function VideoCard({ video, onBet }) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
@@ -164,10 +191,10 @@ function VideoCard({ video, onBet, onFullscreen }) {
 
   const timeLeft    = getTimeLeft(video.resolution_deadline ? new Date(video.resolution_deadline) : new Date());
   const uploadedAgo = video.uploaded_at ? getTimeAgo(new Date(video.uploaded_at)) : null;
-  const yesOdds     = video.odds?.yes     ?? 2.0;
-  const noOdds      = video.odds?.no      ?? 2.0;
-  const yesProb     = video.odds?.yesProb ?? 50;
-  const isHot       = (video.total_bets || 0) >= 10;
+  const yesOdds      = video.odds?.yes      ?? 2.0;
+  const noOdds       = video.odds?.no       ?? 2.0;
+  const yesProb      = video.odds?.yesProb ?? 50;
+  const isHot        = (video.total_bets || 0) >= 10;
 
   const handleBet = async (side) => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -180,87 +207,87 @@ function VideoCard({ video, onBet, onFullscreen }) {
   };
 
   return (
-    <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
-      {isHot && <View style={styles.hotBadge}><Text style={styles.hotBadgeText}>🔥 HOT</Text></View>}
+    <View style={styles.cardContainer} >
+      <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
+        {isHot && <View style={styles.hotBadge}><Text style={styles.hotBadgeText}>🔥 HOT</Text></View>}
 
-      <View style={styles.cardHeader}>
-        <View style={styles.metaLeft}>
-          <View style={styles.anonDot} />
-          <Text style={styles.anonLabel}>Anonymous</Text>
-          {uploadedAgo && <Text style={styles.uploadedAgo}>· {uploadedAgo}</Text>}
+        <View style={styles.cardHeader}>
+          <View style={styles.metaLeft}>
+            <View style={styles.anonDot} />
+            <Text style={styles.anonLabel}>Anonymous</Text>
+            {uploadedAgo && <Text style={styles.uploadedAgo}>· {uploadedAgo}</Text>}
+          </View>
+          <View style={styles.headerRight}>
+            <Pressable onPress={handleShare} hitSlop={10} style={styles.shareBtn}>
+              <Ionicons name="share-social-outline" size={18} color={COLORS.muted} />
+            </Pressable>
+            <View style={styles.timerBadge}>
+              <Ionicons name="time-outline" size={10} color={COLORS.accent} />
+              <Text style={styles.timerText}>{timeLeft}</Text>
+            </View>
+          </View>
         </View>
-        <View style={styles.headerRight}>
-          <Pressable onPress={handleShare} hitSlop={10} style={styles.shareBtn}>
-            <Ionicons name="share-social-outline" size={18} color={COLORS.muted} />
+
+        {video.likes_at_ingestion != null && (
+          <View style={styles.likesRow}>
+            <Ionicons name="heart" size={10} color={COLORS.accent} />
+            <Text style={styles.likesText}>{video.likes_at_ingestion.toLocaleString()} likes at submission</Text>
+          </View>
+        )}
+
+        <VideoPlayer
+          videoId={video.id}
+          fallbackUrl={video.direct_video_url}
+        />
+
+        {/* Odds bar */}
+        <View style={styles.oddsSection}>
+          <View style={styles.oddsBar}>
+            <View style={[styles.oddsYes, { flex: yesProb }]} />
+            <View style={[styles.oddsNo,  { flex: 100 - yesProb }]} />
+          </View>
+          <View style={styles.oddsLabels}>
+            <Text style={styles.oddsLabelYes}>🚀 {yesProb}% · {yesOdds.toFixed(2)}×</Text>
+            <Text style={styles.oddsLabelNo}>{noOdds.toFixed(2)}× · {100 - yesProb}% 📉</Text>
+          </View>
+        </View>
+
+        <View style={styles.crowdRow}>
+          <Ionicons name="people-outline" size={11} color={COLORS.muted} />
+          <Text style={styles.crowdText}>{video.noisy_bet_range} predictions placed</Text>
+        </View>
+
+        <View style={styles.betRow}>
+          <Pressable
+            style={({ pressed }) => [styles.betBtnViral, pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }]}
+            onPress={() => handleBet('yes')}
+          >
+            <LinearGradient colors={['#00E87A','#00A855']} style={styles.betBtnGrad} start={[0,0]} end={[1,0]}>
+              <Ionicons name="trending-up" size={16} color="#000" />
+              <Text style={styles.betBtnViralLabel}>GOES VIRAL</Text>
+              <Text style={styles.betBtnOdds}>{yesOdds.toFixed(2)}×</Text>
+            </LinearGradient>
           </Pressable>
-          <View style={styles.timerBadge}>
-            <Ionicons name="time-outline" size={10} color={COLORS.accent} />
-            <Text style={styles.timerText}>{timeLeft}</Text>
-          </View>
+          <Pressable
+            style={({ pressed }) => [styles.betBtnFlop, pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }]}
+            onPress={() => handleBet('no')}
+          >
+            <View style={styles.betBtnFlopInner}>
+              <Ionicons name="trending-down" size={16} color={COLORS.accent} />
+              <Text style={styles.betBtnFlopLabel}>FLOPS</Text>
+              <Text style={[styles.betBtnOdds, { color: COLORS.accent }]}>{noOdds.toFixed(2)}×</Text>
+            </View>
+          </Pressable>
         </View>
-      </View>
-
-      {video.likes_at_ingestion != null && (
-        <View style={styles.likesRow}>
-          <Ionicons name="heart" size={10} color={COLORS.accent} />
-          <Text style={styles.likesText}>{video.likes_at_ingestion.toLocaleString()} likes at submission</Text>
-        </View>
-      )}
-
-      <VideoPlayer
-        videoId={video.id}
-        fallbackUrl={video.direct_video_url}
-        onFullscreen={() => onFullscreen(video)}
-      />
-
-      {/* Odds bar */}
-      <View style={styles.oddsSection}>
-        <View style={styles.oddsBar}>
-          <View style={[styles.oddsYes, { flex: yesProb }]} />
-          <View style={[styles.oddsNo,  { flex: 100 - yesProb }]} />
-        </View>
-        <View style={styles.oddsLabels}>
-          <Text style={styles.oddsLabelYes}>🚀 {yesProb}% · {yesOdds.toFixed(2)}×</Text>
-          <Text style={styles.oddsLabelNo}>{noOdds.toFixed(2)}× · {100 - yesProb}% 📉</Text>
-        </View>
-      </View>
-
-      <View style={styles.crowdRow}>
-        <Ionicons name="people-outline" size={11} color={COLORS.muted} />
-        <Text style={styles.crowdText}>{video.noisy_bet_range} predictions placed</Text>
-      </View>
-
-      <View style={styles.betRow}>
-        <Pressable
-          style={({ pressed }) => [styles.betBtnViral, pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }]}
-          onPress={() => handleBet('yes')}
-        >
-          <LinearGradient colors={['#00E87A','#00A855']} style={styles.betBtnGrad} start={[0,0]} end={[1,0]}>
-            <Ionicons name="trending-up" size={16} color="#000" />
-            <Text style={styles.betBtnViralLabel}>GOES VIRAL</Text>
-            <Text style={styles.betBtnOdds}>{yesOdds.toFixed(2)}×</Text>
-          </LinearGradient>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.betBtnFlop, pressed && { opacity: 0.8, transform: [{ scale: 0.97 }] }]}
-          onPress={() => handleBet('no')}
-        >
-          <View style={styles.betBtnFlopInner}>
-            <Ionicons name="trending-down" size={16} color={COLORS.accent} />
-            <Text style={styles.betBtnFlopLabel}>FLOPS</Text>
-            <Text style={[styles.betBtnOdds, { color: COLORS.accent }]}>{noOdds.toFixed(2)}×</Text>
-          </View>
-        </Pressable>
-      </View>
-    </Animated.View>
+      </Animated.View>
+    </View>
   );
 }
 
 // ── Feed Screen ────────────────────────────────────────────
 export default function FeedScreen() {
   const navigation = useNavigation();
-  const { user }   = useAuth();
-  const [videos,     setVideos]     = useState([]);
+  const [videos,      setVideos]      = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -370,7 +397,6 @@ export default function FeedScreen() {
           <VideoCard
             video={item}
             onBet={(v, s) => navigation.navigate('Bet', { video: v, suggestedSide: s })}
-            onFullscreen={(v) => navigation.navigate('Video', { video: v })}
           />
         )}
         contentContainerStyle={[styles.list, videos.length === 0 && { flexGrow: 1 }]}
@@ -453,6 +479,7 @@ const styles = StyleSheet.create({
 
   list:          { padding: SPACING.md, gap: SPACING.sm, paddingBottom: 100 },
 
+  cardContainer: { width: '100%' },
   card:          { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border, ...SHADOW.card },
   hotBadge:      { position: 'absolute', top: 0, left: 0, zIndex: 10, backgroundColor: COLORS.accent, paddingHorizontal: 10, paddingVertical: 4, borderBottomRightRadius: RADIUS.md },
   hotBadgeText:  { color: '#fff', fontFamily: FONTS.body, fontSize: 10, fontWeight: '700', letterSpacing: 1 },
@@ -468,16 +495,19 @@ const styles = StyleSheet.create({
   likesRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.md, paddingBottom: 8 },
   likesText:     { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
 
-  // VIDEO — fixed: uses contain mode option + capped height
-  videoWrapper:    { position: 'relative', backgroundColor: '#000' },
-  videoContainer:  { width: '100%', height: CAPPED_VIDEO_HEIGHT, backgroundColor: '#000' },
+  videoWrapper:    { position: 'relative', backgroundColor: '#000', width: '100%' },
+  videoContainer:  { width: '100%', aspectRatio: 9 / 16, backgroundColor: '#000' },
   video:           { flex: 1 },
-  videoOverlay:    { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.08)' },
+  videoOverlay:    { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.15)' },
   playBtn:         { width: 66, height: 66, borderRadius: 33, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center', paddingLeft: 3 },
-  videoHint:       { color: 'rgba(255,255,255,0.55)', fontFamily: FONTS.body, fontSize: 12 },
-  audioIndicator:  { position: 'absolute', bottom: 10, right: 46, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 12, padding: 6 },
-  videoControls:   { position: 'absolute', top: 8, right: 8, gap: 6 },
-  videoControlBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'center', alignItems: 'center' },
+  videoHint:       { color: 'rgba(255,255,255,0.75)', fontFamily: FONTS.body, fontSize: 12 },
+  audioIndicator:  { position: 'absolute', bottom: 10, right: 12, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 12, padding: 6 },
+  videoControls:   { position: 'absolute', top: 10, right: 10, zIndex: 20 },
+  videoControlBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+
+  // New Fullscreen Modal Style Adaptations
+  fullscreenModalBg: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  fullscreenPlayerContainer: { width: SCREEN_W, height: '100%', backgroundColor: '#000' },
 
   oddsSection:  { paddingHorizontal: SPACING.md, paddingTop: 12, paddingBottom: 4, gap: 6 },
   oddsBar:      { flexDirection: 'row', height: 4, borderRadius: 2, overflow: 'hidden', backgroundColor: COLORS.surfaceHigh },

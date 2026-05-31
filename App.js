@@ -35,6 +35,30 @@ const Stack = createNativeStackNavigator();
 
 export const navigationRef = createNavigationContainerRef();
 
+// ── Navigation Queue System ──────────────────────────────
+let navigationQueue = [];
+
+/**
+ * Navigates immediately if the container is ready, 
+ * otherwise pushes the action into a queue to be flushed on mount.
+ */
+export function navigateWhenReady(name, params) {
+  if (navigationRef.isReady()) {
+    navigationRef.navigate(name, params);
+  } else {
+    navigationQueue.push({ name, params });
+  }
+}
+
+function flushNavigationQueue() {
+  while (navigationQueue.length > 0) {
+    const action = navigationQueue.shift();
+    if (navigationRef.isReady()) {
+      navigationRef.navigate(action.name, action.params);
+    }
+  }
+}
+
 // Configure push notification display
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -121,11 +145,7 @@ function ShareIntentHandler() {
 
     if (sharedUrl && sharedUrl !== handled.current) {
       handled.current = sharedUrl;
-      setTimeout(() => {
-        if (navigationRef.isReady()) {
-          navigationRef.navigate('Submit', { sharedUrl });
-        }
-      }, 300);
+      navigateWhenReady('Submit', { sharedUrl });
     }
 
     resetShareIntent();
@@ -139,16 +159,12 @@ function ShareIntentHandler() {
         const parsed = new URL(url);
         if (parsed.pathname === '/submit' || parsed.host === 'submit') {
           const tiktokUrl = parsed.searchParams.get('url');
-          if (tiktokUrl && navigationRef.isReady()) {
-            setTimeout(() => {
-              navigationRef.navigate('Submit', { sharedUrl: tiktokUrl });
-            }, 300);
+          if (tiktokUrl) {
+            navigateWhenReady('Submit', { sharedUrl: tiktokUrl });
           }
         }
         if (parsed.pathname === '/reset-password' || parsed.host === 'reset-password') {
-          if (navigationRef.isReady()) {
-            navigationRef.navigate('ResetPassword');
-          }
+          navigateWhenReady('ResetPassword');
         }
       } catch (_) {}
     };
@@ -259,7 +275,11 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AuthProvider>
-        <NavigationContainer linking={linking} ref={navigationRef}>
+        <NavigationContainer 
+          linking={linking} 
+          ref={navigationRef}
+          onReady={flushNavigationQueue}
+        >
           <StatusBar style="light" />
           <RootNavigator />
         </NavigationContainer>

@@ -276,65 +276,68 @@ serve(async (req) => {
     }
 
     // ── POST /ingestVideo ─────────────────────────────────
-    if (path === "/ingestVideo" && req.method === "POST") {
-      const e = requireAuth(); if (e) return e;
-      const { tiktokUrl, categories = [], whyReasons = [] } = body;
-      const cleanUrl = tiktokUrl.split("?")[0];
+	if (path === "/ingestVideo" && req.method === "POST") {
+	  const e = requireAuth(); if (e) return e;
+	  const { tiktokUrl, categories = [], whyReasons = [] } = body;
+	  const cleanUrl = tiktokUrl.split("?")[0];
 
-      // Rate limit
-      const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-      const { count } = await admin.from("videos").select("id", { count: "exact", head: true })
-        .eq("added_by_uid", user!.id).gte("added_at", dayStart.toISOString());
-      if ((count || 0) >= MAX_SUBMISSIONS_PER_DAY)
-        return ok({ accepted: false, reason: `Max ${MAX_SUBMISSIONS_PER_DAY} submissions per day` });
+	  // Rate limit
+	  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+	  const { count } = await admin.from("videos").select("id", { count: "exact", head: true })
+		.eq("added_by_uid", user!.id).gte("added_at", dayStart.toISOString());
+	  if ((count || 0) >= MAX_SUBMISSIONS_PER_DAY)
+		return ok({ accepted: false, reason: `Max ${MAX_SUBMISSIONS_PER_DAY} submissions per day` });
 
-      const videoId = extractVideoId(cleanUrl);
-      if (videoId) {
-        const { data: ex } = await admin.from("videos").select("id").eq("tiktok_video_id", videoId).maybeSingle();
-        if (ex) return ok({ accepted: false, reason: "Already in the pool" });
-      }
+	  const videoId = extractVideoId(cleanUrl);
+	  if (videoId) {
+		const { data: ex } = await admin.from("videos").select("id").eq("tiktok_video_id", videoId).maybeSingle();
+		if (ex) return ok({ accepted: false, reason: "Already in the pool" });
+	  }
 
-      const res  = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`);
-      const json = await res.json();
-      const v    = json.data;
-      if (!v) return err("Could not fetch video data", 502);
+	  const res  = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`);
+	  const json = await res.json();
+	  const v    = json.data;
+	  if (!v) return err("Could not fetch video data", 502);
 
-      const uploadedAt = new Date(v.create_time * 1000);
-      const ageH       = (Date.now() - uploadedAt.getTime()) / 3_600_000;
+	  const uploadedAt = new Date(v.create_time * 1000);
+	  const ageH       = (Date.now() - uploadedAt.getTime()) / 3_600_000;
 
-      if (v.digg_count  < MIN_LIKES)            return ok({ accepted: false, reason: `Needs at least ${MIN_LIKES} likes` });
-      if (v.digg_count  > MAX_LIKES)            return ok({ accepted: false, reason: `Over ${MAX_LIKES.toLocaleString()} likes — too popular` });
-      if (v.play_count >= SUBMISSION_THRESHOLD) return ok({ accepted: false, reason: "Already too popular" });
-      if (ageH          > MAX_AGE_HOURS)        return ok({ accepted: false, reason: "Video older than 7 days" });
+	  if (v.digg_count  < MIN_LIKES)            return ok({ accepted: false, reason: `Needs at least ${MIN_LIKES} likes` });
+	  if (v.digg_count  > MAX_LIKES)            return ok({ accepted: false, reason: `Over ${MAX_LIKES.toLocaleString()} likes — too popular` });
+	  if (v.play_count >= SUBMISSION_THRESHOLD) return ok({ accepted: false, reason: "Already too popular" });
+	  if (ageH        > MAX_AGE_HOURS)        return ok({ accepted: false, reason: "Video older than 7 days" });
 
-      const now      = new Date();
-      const deadline = new Date(now.getTime() + RESOLUTION_DAYS * 86_400_000);
+	  const now      = new Date();
+	  const deadline = new Date(now.getTime() + RESOLUTION_DAYS * 86_400_000);
 
-      const { data: video, error: ve } = await admin.from("videos").insert({
-        tiktok_url: cleanUrl, tiktok_video_id: videoId,
-        direct_video_url: v.play, thumbnail_url: v.cover,
-        title: v.title || "Untitled", author_handle: "anonymous",
-        uploaded_at: uploadedAt.toISOString(), added_by_uid: user!.id,
-        likes_at_ingestion: v.digg_count, views_at_ingestion: v.play_count,
-        current_views: v.play_count, resolution_deadline: deadline.toISOString(),
-        url_refreshed_at: now.toISOString(), status: "active",
-        total_bets: 0, yes_bets: 0, no_bets: 0, yes_pool: 0, no_pool: 0,
-        noisy_bet_range: "a few", random_seed: Math.random(),
-        categories,
-      }).select().single();
-      if (ve) return err(ve.message, 500);
+	  const { data: video, error: ve } = await admin.from("videos").insert({
+		tiktok_url: cleanUrl, tiktok_video_id: videoId,
+		direct_video_url: v.play, 
+		
+		// 🔥 FIXED: Pull the native vertical layout frame instead of the padded layout frame
+		thumbnail_url: v.origin_cover || v.cover, 
+		
+		title: v.title || "Untitled", author_handle: "anonymous",
+		uploaded_at: uploadedAt.toISOString(), added_by_uid: user!.id,
+		likes_at_ingestion: v.digg_count, views_at_ingestion: v.play_count,
+		current_views: v.play_count, resolution_deadline: deadline.toISOString(),
+		url_refreshed_at: now.toISOString(), status: "active",
+		total_bets: 0, yes_bets: 0, no_bets: 0, yes_pool: 0, no_pool: 0,
+		noisy_bet_range: "a few", random_seed: Math.random(),
+		categories,
+	  }).select().single();
+	  if (ve) return err(ve.message, 500);
 
-      await admin.from("resolution_queue").insert({
-        video_id: video.id,
-        check_24h_at: new Date(now.getTime() + 86_400_000).toISOString(),
-        check_48h_at: new Date(now.getTime() + 172_800_000).toISOString(),
-        check_7d_at:  deadline.toISOString(),
-        check_24h_done: false, check_48h_done: false, check_7d_done: false,
-      });
+	  await admin.from("resolution_queue").insert({
+		video_id: video.id,
+		check_24h_at: new Date(now.getTime() + 86_400_000).toISOString(),
+		check_48h_at: new Date(now.getTime() + 172_800_000).toISOString(),
+		check_7d_at:  deadline.toISOString(),
+		check_24h_done: false, check_48h_done: false, check_7d_done: false,
+	  });
 
-      return ok({ accepted: true, videoId: video.id });
-    }
-
+	  return ok({ accepted: true, videoId: video.id });
+	}
     // ── POST /placeBet ────────────────────────────────────
     // FIX: removed the .catch() that was causing phantom errors
     if (path === "/placeBet" && req.method === "POST") {
