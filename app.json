@@ -3,7 +3,7 @@
     "name": "BetTok",
     "icon": "./assets/icon2.png",
     "slug": "bettok",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "scheme": "bettok",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
