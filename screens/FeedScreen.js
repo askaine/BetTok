@@ -3,7 +3,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
   ActivityIndicator, RefreshControl, Animated,
-  Pressable, Share, Dimensions, Modal,
+  Pressable, Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Video, ResizeMode } from 'expo-av';
@@ -14,8 +14,6 @@ import { getApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING, SHADOW } from '../theme';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../context/AuthContext';
-
-const { width: SCREEN_W } = Dimensions.get('window');
 
 // ── Streak Banner ──────────────────────────────────────────
 function StreakBanner({ streak, sparks, onDailyBonus }) {
@@ -49,14 +47,12 @@ function StreakBanner({ streak, sparks, onDailyBonus }) {
 }
 
 // ── Video Player ───────────────────────────────────────────
-function VideoPlayer({ videoId, fallbackUrl }) {
+function VideoPlayer({ videoId, fallbackUrl, onExpand }) {
   const videoRef  = useRef(null);
   const [isPlaying,   setIsPlaying]   = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [fetchingUrl, setFetchingUrl] = useState(false);
   const [videoUri,    setVideoUri]    = useState(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [positionMillis, setPositionMillis] = useState(0);
 
   // Resolves the playback URL from the backend if not already cached
   const ensureUriLoaded = async () => {
@@ -73,10 +69,7 @@ function VideoPlayer({ videoId, fallbackUrl }) {
   };
 
   const togglePlay = async () => {
-    if (isPlaying) {
-      setIsPlaying(false);
-      return;
-    }
+    if (isPlaying) { setIsPlaying(false); return; }
     await ensureUriLoaded();
     setIsPlaying(true);
   };
@@ -84,106 +77,67 @@ function VideoPlayer({ videoId, fallbackUrl }) {
   const onStatus = (s) => {
     if (!s.isLoaded) return;
     setIsBuffering(s.isBuffering && !s.isPlaying);
-    // Keep track of the current playback millisecond timestamp
-    setPositionMillis(s.positionMillis);
-    if (s.didJustFinish) { 
-      setIsPlaying(false); 
+    if (s.didJustFinish) {
+      setIsPlaying(false);
       videoRef.current?.setPositionAsync(0);
-      setPositionMillis(0);
     }
   };
 
-  const handleFullscreenEnter = async () => {
+  const handleExpand = async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    await ensureUriLoaded();
-    setIsFullscreen(true);
+    onExpand?.();
   };
-
-  const handleFullscreenExit = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setIsFullscreen(false);
-  };
-
-  // Reusable player contents to ensure configuration alignment across views
-  const renderPlayer = (isModalView) => (
-    <Pressable 
-      style={isModalView ? styles.fullscreenPlayerContainer : styles.videoContainer} 
-      onPress={togglePlay}
-    >
-      <Video
-        ref={videoRef}
-        style={styles.video}
-        source={videoUri ? { uri: videoUri } : null}
-        useNativeControls={false}
-        resizeMode={isModalView ? ResizeMode.CONTAIN : ResizeMode.COVER}
-        shouldPlay={isPlaying}
-        initialStatus={{ positionMillis: positionMillis }}
-        isMuted={false}
-        volume={1.0}
-        onPlaybackStatusUpdate={onStatus}
-      />
-
-      {(fetchingUrl || isBuffering) && (
-        <View style={styles.videoOverlay} pointerEvents="none">
-          <ActivityIndicator color="#fff" size="large" />
-          {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
-        </View>
-      )}
-
-      {!isPlaying && !fetchingUrl && !isBuffering && (
-        <View style={styles.videoOverlay} pointerEvents="none">
-          <View style={styles.playBtn}>
-            <Ionicons name="play" size={30} color="#fff" />
-          </View>
-          <Text style={styles.videoHint}>Tap to play</Text>
-        </View>
-      )}
-
-      {isPlaying && !isModalView && (
-        <View style={styles.audioIndicator} pointerEvents="none">
-          <Ionicons name="volume-high" size={13} color="#fff" />
-        </View>
-      )}
-
-      {/* Floating Controls Overlay Area */}
-      <View style={styles.videoControls}>
-        {isModalView ? (
-          <Pressable style={styles.videoControlBtn} onPress={handleFullscreenExit} hitSlop={8}>
-            <Ionicons name="contract-outline" size={16} color="#fff" />
-          </Pressable>
-        ) : (
-          <Pressable style={styles.videoControlBtn} onPress={handleFullscreenEnter} hitSlop={8}>
-            <Ionicons name="expand-outline" size={16} color="#fff" />
-          </Pressable>
-        )}
-      </View>
-    </Pressable>
-  );
 
   return (
     <View style={styles.videoWrapper}>
-      {/* Inline feed configuration layer */}
-      {!isFullscreen ? renderPlayer(false) : (
-        <View style={styles.videoContainer} /> 
-      )}
+      <Pressable style={styles.videoContainer} onPress={togglePlay}>
+        <Video
+          ref={videoRef}
+          style={styles.video}
+          source={videoUri ? { uri: videoUri } : null}
+          useNativeControls={false}
+          resizeMode={ResizeMode.COVER}
+          shouldPlay={isPlaying}
+          isMuted={false}
+          volume={1.0}
+          onPlaybackStatusUpdate={onStatus}
+        />
 
-      {/* Immersive device-wide fullscreen view escape modal */}
-      <Modal
-        visible={isFullscreen}
-        transparent={false}
-        animationType="fade"
-        onRequestClose={handleFullscreenExit}
-      >
-        <SafeAreaView style={styles.fullscreenModalBg}>
-          {isFullscreen && renderPlayer(true)}
-        </SafeAreaView>
-      </Modal>
+        {(fetchingUrl || isBuffering) && (
+          <View style={styles.videoOverlay} pointerEvents="none">
+            <ActivityIndicator color="#fff" size="large" />
+            {fetchingUrl && <Text style={styles.videoHint}>Loading…</Text>}
+          </View>
+        )}
+
+        {!isPlaying && !fetchingUrl && !isBuffering && (
+          <View style={styles.videoOverlay} pointerEvents="none">
+            <View style={styles.playBtn}>
+              <Ionicons name="play" size={30} color="#fff" />
+            </View>
+            <Text style={styles.videoHint}>Tap to play</Text>
+          </View>
+        )}
+
+        {isPlaying && (
+          <View style={styles.audioIndicator} pointerEvents="none">
+            <Ionicons name="volume-high" size={13} color="#fff" />
+          </View>
+        )}
+
+        {/* Expand button — navigates to full VideoScreen */}
+        <View style={styles.videoControls}>
+          <Pressable style={styles.videoControlBtn} onPress={handleExpand} hitSlop={8}>
+            <Ionicons name="expand-outline" size={16} color="#fff" />
+          </Pressable>
+        </View>
+      </Pressable>
     </View>
   );
 }
 
 // ── Video Card ─────────────────────────────────────────────
-function VideoCard({ video, onBet }) {
+function VideoCard({ video, onBet, onExpand }) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 350, useNativeDriver: true }).start();
@@ -238,6 +192,7 @@ function VideoCard({ video, onBet }) {
         <VideoPlayer
           videoId={video.id}
           fallbackUrl={video.direct_video_url}
+          onExpand={() => onExpand?.(video)}
         />
 
         {/* Odds bar */}
@@ -393,10 +348,11 @@ export default function FeedScreen() {
       <FlatList
         data={videos}
         keyExtractor={item => item.id}
-        renderItem={({ item }) => (
+        renderItem={({ item, index }) => (
           <VideoCard
             video={item}
             onBet={(v, s) => navigation.navigate('Bet', { video: v, suggestedSide: s })}
+            onExpand={(v) => navigation.navigate('Video', { video: v, videos, initialIndex: index })}
           />
         )}
         contentContainerStyle={[styles.list, videos.length === 0 && { flexGrow: 1 }]}
@@ -504,10 +460,6 @@ const styles = StyleSheet.create({
   audioIndicator:  { position: 'absolute', bottom: 10, right: 12, backgroundColor: 'rgba(0,0,0,0.55)', borderRadius: 12, padding: 6 },
   videoControls:   { position: 'absolute', top: 10, right: 10, zIndex: 20 },
   videoControlBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
-
-  // New Fullscreen Modal Style Adaptations
-  fullscreenModalBg: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
-  fullscreenPlayerContainer: { width: SCREEN_W, height: '100%', backgroundColor: '#000' },
 
   oddsSection:  { paddingHorizontal: SPACING.md, paddingTop: 12, paddingBottom: 4, gap: 6 },
   oddsBar:      { flexDirection: 'row', height: 4, borderRadius: 2, overflow: 'hidden', backgroundColor: COLORS.surfaceHigh },
