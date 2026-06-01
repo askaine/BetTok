@@ -3,7 +3,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
   ActivityIndicator, RefreshControl, Animated,
-  Pressable, Share,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Video, ResizeMode } from 'expo-av';
@@ -13,7 +13,6 @@ import * as Haptics from 'expo-haptics';
 import { getApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING, SHADOW } from '../theme';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { useAuth } from '../context/AuthContext';
 
 // ── Streak Banner ──────────────────────────────────────────
 function StreakBanner({ streak, sparks, onDailyBonus }) {
@@ -155,11 +154,6 @@ function VideoCard({ video, onBet, onExpand }) {
     onBet(video, side);
   };
 
-  const handleShare = async () => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await Share.share({ message: `🔥 Will this TikTok go viral? Predict on BetTok!\n${video.tiktok_url || 'https://bettok.app'}` });
-  };
-
   return (
     <View style={styles.cardContainer} >
       <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
@@ -172,9 +166,6 @@ function VideoCard({ video, onBet, onExpand }) {
             {uploadedAgo && <Text style={styles.uploadedAgo}>· {uploadedAgo}</Text>}
           </View>
           <View style={styles.headerRight}>
-            <Pressable onPress={handleShare} hitSlop={10} style={styles.shareBtn}>
-              <Ionicons name="share-social-outline" size={18} color={COLORS.muted} />
-            </Pressable>
             <View style={styles.timerBadge}>
               <Ionicons name="time-outline" size={10} color={COLORS.accent} />
               <Text style={styles.timerText}>{timeLeft}</Text>
@@ -445,7 +436,6 @@ const styles = StyleSheet.create({
   anonLabel:     { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 12, fontStyle: 'italic' },
   uploadedAgo:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 11 },
   headerRight:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  shareBtn:      { padding: 4 },
   timerBadge:    { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.accentGlow, borderWidth: 1, borderColor: COLORS.accent + '44', paddingHorizontal: 8, paddingVertical: 3, borderRadius: RADIUS.full },
   timerText:     { color: COLORS.accent, fontFamily: FONTS.body, fontSize: 10, fontWeight: '700' },
   likesRow:      { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: SPACING.md, paddingBottom: 8 },

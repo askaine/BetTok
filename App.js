@@ -94,9 +94,25 @@ function MainTabs() {
           backgroundColor:  COLORS.bg,
           borderTopColor:   COLORS.border,
           borderTopWidth:   1,
-          paddingBottom:    10,
-          paddingTop:       8,
-          height:           68,
+          paddingBottom:    12, // Pads the label text slightly inside the bar
+          paddingTop:       12,
+          height:           64,
+          
+          // ── FLOATING TAB BAR ADJUSTMENTS ──
+          position:         'absolute', 
+          bottom:           16,        // Pulls the entire bar up away from phone's system UI buttons
+          left:             16,        // Side padding for floating look
+          right:            16,       // Side padding for floating look
+          borderRadius:     16,        // Rounds the edges of the floating element
+          borderWidth:      1,         // Encases the panel cleanly
+          borderColor:      COLORS.border,
+          
+          // Shadow to elevate it above background content
+          shadowColor:      '#000',
+          shadowOffset:     { width: 0, height: 4 },
+          shadowOpacity:    0.3,
+          shadowRadius:     4,
+          elevation:        8,         // Elevation for Android devices
         },
         tabBarActiveTintColor:   COLORS.accent,
         tabBarInactiveTintColor: COLORS.muted,
