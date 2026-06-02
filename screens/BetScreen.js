@@ -1,9 +1,9 @@
 // screens/BetScreen.js
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, ScrollView,
+  View, Text, StyleSheet, Pressable,
   Animated, ActivityIndicator, SafeAreaView, Modal,
-  TextInput, FlatList, TouchableOpacity, Dimensions,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -13,124 +13,11 @@ import { useAuth } from '../context/AuthContext';
 import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
 import { useNavigation, useRoute } from '@react-navigation/native';
 
+// Import the shared modular TagSearch component
+import TagSearch from '../components/TagSearch';
+
 const { width: W } = Dimensions.get('window');
 const BASE_WAGER_OPTIONS = [25, 50, 100, 200, 500];
-
-// ── Tag Search (itch.io style) ─────────────────────────────
-function TagSearch({ selectedTags, onChange }) {
-  const [query,       setQuery]       = useState('');
-  const [suggestions, setSuggestions] = useState([]);
-  const [loadingSug,  setLoadingSug]  = useState(false);
-  const debounceRef = useRef(null);
-
-  const search = useCallback(async (q) => {
-    setLoadingSug(true);
-    try {
-      const r = await getApi('/tags/search', { q, limit: '8' });
-      setSuggestions(r.tags || []);
-    } catch (_) {
-      // Fallback to popular default tags
-      setSuggestions([
-        'trending_sound','strong_hook','humor','emotional','dance_challenge',
-        'controversy','news_moment','relatable','satisfying','early_trend',
-      ].filter(t => t.includes(q.toLowerCase())));
-    } finally {
-      setLoadingSug(false);
-    }
-  }, []);
-
-  const onQueryChange = (v) => {
-    setQuery(v);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(v), 300);
-  };
-
-  const addTag = async (tag) => {
-    const clean = tag.trim().toLowerCase().replace(/\s+/g, '_');
-    if (!clean || selectedTags.includes(clean) || selectedTags.length >= 5) return;
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    onChange([...selectedTags, clean]);
-    setQuery('');
-    setSuggestions([]);
-  };
-
-  const removeTag = async (tag) => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    onChange(selectedTags.filter(t => t !== tag));
-  };
-
-  const handleAddCustom = () => {
-    if (query.trim()) addTag(query.trim());
-  };
-
-  useEffect(() => { search(''); }, []);
-
-  return (
-    <View style={tagStyles.container}>
-      {/* Selected tags */}
-      {selectedTags.length > 0 && (
-        <View style={tagStyles.selectedRow}>
-          {selectedTags.map(tag => (
-            <Pressable key={tag} style={tagStyles.selectedTag} onPress={() => removeTag(tag)}>
-              <Text style={tagStyles.selectedTagText}>{tag.replace(/_/g, ' ')}</Text>
-              <Ionicons name="close" size={12} color={COLORS.yes} />
-            </Pressable>
-          ))}
-        </View>
-      )}
-
-      {/* Search input */}
-      <View style={tagStyles.inputRow}>
-        <Ionicons name="search-outline" size={15} color={COLORS.muted} />
-        <TextInput
-          style={tagStyles.input}
-          placeholder={selectedTags.length >= 5 ? 'Max 5 tags' : 'Search or create a tag…'}
-          placeholderTextColor={COLORS.muted}
-          value={query}
-          onChangeText={onQueryChange}
-          editable={selectedTags.length < 5}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="done"
-          onSubmitEditing={handleAddCustom}
-        />
-        {loadingSug && <ActivityIndicator size="small" color={COLORS.muted} />}
-        {query.trim() && !loadingSug && (
-          <Pressable onPress={handleAddCustom} style={tagStyles.addBtn}>
-            <Text style={tagStyles.addBtnText}>Add</Text>
-          </Pressable>
-        )}
-      </View>
-
-      {/* Suggestions */}
-      {suggestions.length > 0 && (
-        <View style={tagStyles.suggestionsBox}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={tagStyles.suggestionsRow}>
-            {suggestions.map(tag => {
-              const isSelected = selectedTags.includes(tag);
-              return (
-                <Pressable
-                  key={tag}
-                  style={[tagStyles.suggestionPill, isSelected && tagStyles.suggestionPillSelected]}
-                  onPress={() => isSelected ? removeTag(tag) : addTag(tag)}
-                >
-                  {isSelected && <Ionicons name="checkmark" size={11} color={COLORS.yes} />}
-                  <Text style={[tagStyles.suggestionText, isSelected && { color: COLORS.yes }]}>
-                    {tag.replace(/_/g, ' ')}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
-
-      <Text style={tagStyles.hint}>
-        {selectedTags.length}/5 tags · Tap to add, tap again to remove
-      </Text>
-    </View>
-  );
-}
 
 // ── Result Modal ───────────────────────────────────────────
 function ResultModal({ visible, type, title, message, onClose, onAction, actionLabel }) {
@@ -215,8 +102,8 @@ export default function BetScreen() {
     }
 
     setSubmitting(true);
-    let result: any = null;
-    let betError: any = null;
+    let result = null;
+    let betError = null;
 
     try {
       result = await callApi('/placeBet', {
@@ -235,7 +122,7 @@ export default function BetScreen() {
     // Handle error
     if (betError || !result?.success) {
       const msg = betError?.message || result?.error || 'Something went wrong';
-      if (msg.includes('already placed') || msg.includes('already placed')) {
+      if (msg.includes('already placed')) {
         setModal({ visible: true, type: 'duplicate', title: 'Already predicted!', message: "You've already made a prediction on this video." });
       } else if (msg.includes('Not enough')) {
         setModal({ visible: true, type: 'warning', title: 'Not enough Sparks', message: msg });
@@ -364,6 +251,7 @@ export default function BetScreen() {
               <Text style={{ color: COLORS.accent }}>At least 1 required.</Text>
             </Text>
 
+            {/* Now flawlessly invoking the imported shared TagSearch module */}
             <TagSearch selectedTags={whyTags} onChange={setWhyTags} />
 
             {/* Bet summary */}
@@ -458,23 +346,6 @@ const styles = StyleSheet.create({
   summaryRow:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   summaryKey:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12 },
   summaryVal:   { color: COLORS.text, fontFamily: FONTS.display, fontSize: 15 },
-});
-
-const tagStyles = StyleSheet.create({
-  container:    { gap: SPACING.sm },
-  selectedRow:  { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  selectedTag:  { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.yesGlow, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: COLORS.yes + '44' },
-  selectedTagText: { color: COLORS.yes, fontFamily: FONTS.body, fontSize: 11, fontWeight: '700' },
-  inputRow:     { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: SPACING.sm, paddingVertical: 4 },
-  input:        { flex: 1, color: COLORS.text, fontFamily: FONTS.body, fontSize: 13, paddingVertical: 10 },
-  addBtn:       { backgroundColor: COLORS.accent, borderRadius: RADIUS.sm, paddingHorizontal: 10, paddingVertical: 5 },
-  addBtnText:   { color: '#fff', fontFamily: FONTS.body, fontSize: 11, fontWeight: '700' },
-  suggestionsBox: { backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, padding: 8 },
-  suggestionsRow: { gap: 6, paddingVertical: 2 },
-  suggestionPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.full, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: COLORS.border },
-  suggestionPillSelected: { borderColor: COLORS.yes, backgroundColor: COLORS.yesGlow },
-  suggestionText: { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 11 },
-  hint:         { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10, textAlign: 'center' },
 });
 
 const modalStyles = StyleSheet.create({

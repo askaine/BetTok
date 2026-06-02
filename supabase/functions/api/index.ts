@@ -7,7 +7,7 @@ const RESOLVE_SECRET    = Deno.env.get("RESOLVE_SECRET") || "change-me";
 const ADMIN_EMAIL       = "yonazikri@gmail.com";
 
 // ── Constants ─────────────────────────────────────────────
-const VIRALITY_THRESHOLD   = 1_000_000;
+const VIRALITY_THRESHOLD   = 50_000;
 const SUBMISSION_THRESHOLD = 50_000;
 const MIN_LIKES            = 500;
 const MAX_LIKES            = 5_000;
@@ -554,27 +554,33 @@ serve(async (req) => {
       return ok({ entries: data?.entries || [] });
     }
 
-    // ── GET /videoUrl ─────────────────────────────────────
-    if (path === "/videoUrl" && req.method === "GET") {
-      const videoId = url.searchParams.get("id");
-      if (!videoId) return err("id required");
-      const { data: video } = await admin.from("videos")
-        .select("tiktok_url, direct_video_url, url_refreshed_at").eq("id", videoId).single();
-      if (!video) return err("Not found", 404);
-      const refreshedAt = video.url_refreshed_at ? new Date(video.url_refreshed_at) : null;
-      const ageH        = refreshedAt ? (Date.now() - refreshedAt.getTime()) / 3_600_000 : 999;
-      if (ageH < 12 && video.direct_video_url) return ok({ url: video.direct_video_url });
-      try {
-        const r   = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(video.tiktok_url)}`);
-        const j   = await r.json();
-        const url2 = j?.data?.play;
-        if (url2) {
-          await admin.from("videos").update({ direct_video_url: url2, url_refreshed_at: new Date().toISOString() }).eq("id", videoId);
-          return ok({ url: url2 });
-        }
-      } catch {}
-      return ok({ url: video.direct_video_url });
-    }
+	// ── GET /videoUrl ─────────────────────────────────────
+	if (path === "/videoUrl" && req.method === "GET") {
+	  const videoId = url.searchParams.get("id");
+	  if (!videoId) return err("id required");
+	  const { data: video } = await admin.from("videos")
+		.select("tiktok_url, direct_video_url, url_refreshed_at").eq("id", videoId).single();
+	  if (!video) return err("Not found", 404);
+
+	  if (video.direct_video_url) {
+		try {
+		  const check = await fetch(video.direct_video_url, { method: "HEAD" });
+		  if (check.ok) return ok({ url: video.direct_video_url });
+		} catch {}
+	  }
+
+	  try {
+		const r    = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(video.tiktok_url)}`);
+		const j    = await r.json();
+		const url2 = j?.data?.play;
+		if (url2) {
+		  await admin.from("videos").update({ direct_video_url: url2, url_refreshed_at: new Date().toISOString() }).eq("id", videoId);
+		  return ok({ url: url2 });
+		}
+	  } catch {}
+
+	  return ok({ url: video.direct_video_url });
+	}
 
     // ══════════════════════════════════════════════════════
     // ADMIN ENDPOINTS — yonazikri@gmail.com only
@@ -660,14 +666,27 @@ serve(async (req) => {
     }
 
     // ── GET /admin/insights ───────────────────────────────
-    // The data product — aggregated why_reasons
+    // The data product — aggregated why_reasons & categories
     if (path === "/admin/insights" && req.method === "GET") {
       const ae = await requireAdmin(); if (ae) return ae;
       const videoId  = url.searchParams.get("video_id") || "";
       const fromDate = url.searchParams.get("from") || "";
       const toDate   = url.searchParams.get("to") || "";
 
-      let query = admin.from("prediction_insights").select("video_id, side, why_reasons, wagered, odds_at_bet, created_at");
+      // 🔥 FIX: Select relational video data (categories and status) to satisfy frontend requirements
+      let query = admin.from("prediction_insights").select(`
+        video_id, 
+        side, 
+        why_reasons, 
+        wagered, 
+        odds_at_bet, 
+        created_at,
+        videos (
+          categories,
+          status
+        )
+      `);
+      
       if (videoId)  query = query.eq("video_id", videoId);
       if (fromDate) query = query.gte("created_at", fromDate);
       if (toDate)   query = query.lte("created_at", toDate);
@@ -675,7 +694,32 @@ serve(async (req) => {
 
       const { data, error: ie } = await query;
       if (ie) return err(ie.message, 500);
-      return ok({ insights: data || [], count: data?.length || 0 });
+
+      // 🔥 FIX: Map over the records to shape the data exactly as AdminScreen.js expects it
+      const enrichedInsights = (data || []).map((row: any) => {
+        const video = row.videos;
+        let outcome = "pending";
+
+        // Calculate the user's prediction outcome based on the resolved video status
+        if (video?.status === "resolved_yes") {
+          outcome = row.side === "yes" ? "won" : "lost";
+        } else if (video?.status === "resolved_no") {
+          outcome = row.side === "no" ? "won" : "lost";
+        }
+
+        return {
+          video_id: row.video_id,
+          side: row.side,
+          why_reasons: row.why_reasons || [],
+          wagered: row.wagered,
+          odds_at_bet: row.odds_at_bet,
+          created_at: row.created_at,
+          categories: video?.categories || [], // Pass down the array of categories
+          outcome: outcome,                    // 'won', 'lost', or 'pending'
+        };
+      });
+
+      return ok({ insights: enrichedInsights, count: enrichedInsights.length });
     }
 
     // ── GET /admin/export ─────────────────────────────────
@@ -734,6 +778,98 @@ serve(async (req) => {
       const newBal = Math.max(0, (u.sparks || 0) + amount);
       await admin.from("users").update({ sparks: newBal }).eq("id", userId);
       return ok({ ok: true, username: u.username, oldBalance: u.sparks, newBalance: newBal });
+    }
+
+    // ── POST /admin/banUser ───────────────────────────────
+    if (path === "/admin/banUser" && req.method === "POST") {
+      const ae = await requireAdmin(); if (ae) return ae;
+      const { userId } = body;
+      if (!userId) return err("userId required");
+
+      const { data: u } = await admin.from("users").select("is_banned, username").eq("id", userId).single();
+      if (!u) return err("User not found", 404);
+
+      const newBanned = !u.is_banned;
+      await admin.from("users").update({ is_banned: newBanned }).eq("id", userId);
+      return ok({ ok: true, username: u.username, is_banned: newBanned });
+    }
+
+    // ── POST /admin/resolveVideoAuto ──────────────────────
+    if (path === "/admin/resolveVideoAuto" && req.method === "POST") {
+      const ae = await requireAdmin(); if (ae) return ae;
+      const { videoId } = body;
+      if (!videoId) return err("videoId required");
+
+      const { data: video } = await admin.from("videos").select("*").eq("id", videoId).single();
+      if (!video) return err("Video not found", 404);
+      if (video.status !== "active") return err("Video is not active");
+
+      const now = new Date();
+      const freshViews = await fetchViews(video.tiktok_url);
+      const currentViews = freshViews ?? (video.current_views || 0);
+
+      if (freshViews !== null) {
+        await admin.from("videos").update({ current_views: freshViews }).eq("id", video.id);
+      }
+
+      // Admin-triggered: always resolve immediately. Viral = hit 50k views, otherwise flopped.
+      const isViral = currentViews >= 50_000;
+
+      const resolution = isViral ? "resolved_yes" : "resolved_no";
+      await admin.from("videos").update({
+        status: resolution,
+        resolved_at: now.toISOString(),
+        current_views: currentViews,
+      }).eq("id", video.id);
+
+      const { data: bets } = await admin
+        .from("bets").select("*").eq("video_id", video.id).eq("status", "pending");
+
+      for (const bet of (bets || [])) {
+        const won = bet.side === (isViral ? "yes" : "no");
+        const sparksEarned = won ? (bet.potential_payout || 0) : 0;
+
+        await admin.from("bets").update({
+          status: won ? "won" : "lost",
+          settled_at: now.toISOString(),
+          sparks_earned: sparksEarned,
+        }).eq("id", bet.id);
+
+        const { data: u } = await admin.from("users").select("*").eq("id", bet.uid).single();
+        if (!u) continue;
+
+        const upd: Record<string, unknown> = {};
+        if (won) {
+          upd.sparks         = (u.sparks || 0) + sparksEarned;
+          upd.correct_bets   = (u.correct_bets || 0) + 1;
+          upd.current_streak = (u.current_streak || 0) + 1;
+          upd.weekly_score   = (u.weekly_score  || 0) + sparksEarned;
+          upd.all_time_score = (u.all_time_score || 0) + sparksEarned;
+          const ns = (u.current_streak || 0) + 1;
+          if (ns > (u.longest_streak || 0)) upd.longest_streak = ns;
+          const badges = [...(u.badges || [])];
+          if (!badges.includes("contrarian") && bet.side === "no") badges.push("contrarian");
+          if (ns >= 5  && !badges.includes("streak_5"))  badges.push("streak_5");
+          if (ns >= 10 && !badges.includes("streak_10")) badges.push("streak_10");
+          const at = (u.all_time_score || 0) + sparksEarned;
+          if (at >= 1000 && !badges.includes("club_1000")) badges.push("club_1000");
+          if (at >= 5000 && !badges.includes("club_5000")) badges.push("club_5000");
+          upd.badges = badges;
+        } else {
+          if ((u.current_streak || 0) > (u.longest_streak || 0)) upd.longest_streak = u.current_streak;
+          upd.current_streak = 0;
+        }
+        await admin.from("users").update(upd).eq("id", bet.uid);
+
+        if (u.push_token) {
+          const t = video.title || "A video";
+          won
+            ? await sendPush(u.push_token, "⚡ Bet Won!", `+${sparksEarned} Sparks — ${t}`)
+            : await sendPush(u.push_token, "📉 Bet Lost", `${isViral ? "Went viral" : "Flopped"} — ${t}`);
+        }
+      }
+
+      return ok({ ok: true, resolution, currentViews, betsSettled: (bets || []).length });
     }
 
     return err("Not found", 404);

@@ -365,16 +365,29 @@ async function updateLeaderboards() {
 
 // ── Main resolve handler ────────────────────────────────────────────────────
 
-serve(async () => {
+serve(async (req) => {
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
   try {
     const now = new Date();
 
-    const { data: queue } = await admin
+    // Support on-demand single-video resolution (called from admin panel)
+    let forcedVideoId: string | null = null;
+    try {
+      const body = await req.json();
+      forcedVideoId = body?.videoId ?? null;
+    } catch { /* scheduled call — no body */ }
+
+    const queueQuery = admin
       .from("resolution_queue")
       .select("*")
       .eq("check_7d_done", false);
+
+    if (forcedVideoId) {
+      queueQuery.eq("video_id", forcedVideoId);
+    }
+
+    const { data: queue } = await queueQuery;
 
     let processed = 0;
 
@@ -466,3 +479,55 @@ serve(async () => {
     });
   }
 });
+
+// ── Admin on-demand handler (POST { videoId }) ──────────────────────────────
+// Register this in your admin Edge Function router as POST /admin/resolveVideoAuto
+// It forces a single video through the auto-resolve pipeline immediately.
+export async function resolveVideoAuto(videoId: string): Promise<{ ok: boolean; resolution: string | null }> {
+  const now = new Date();
+
+  const { data: video } = await admin
+    .from("videos").select("*").eq("id", videoId).single();
+
+  if (!video || video.status !== "active") {
+    throw new Error(`Video ${videoId} not found or already resolved.`);
+  }
+
+  // Fetch live views
+  let currentViews = video.current_views || 0;
+  const freshViews = await fetchCurrentViews(video.tiktok_url);
+  if (freshViews !== null) {
+    currentViews = freshViews;
+    await admin.from("videos").update({ current_views: freshViews }).eq("id", video.id);
+  }
+
+  // Check bet threshold
+  const { count: totalBets } = await admin
+    .from("bets")
+    .select("*", { count: "exact", head: true })
+    .eq("video_id", videoId);
+
+  if ((totalBets || 0) < MIN_BETS_THRESHOLD) {
+    await voidVideoAndRefund(videoId);
+    return { ok: true, resolution: "voided" };
+  }
+
+  const isViral    = currentViews >= VIRALITY_THRESHOLD;
+  const resolution = isViral ? "resolved_yes" : "resolved_no";
+
+  await admin.from("videos").update({
+    status:      resolution,
+    resolved_at: now.toISOString(),
+    last_checked_at: now.toISOString(),
+  }).eq("id", videoId);
+
+  await admin.from("resolution_queue").update({
+    check_24h_done: true, check_48h_done: true, check_7d_done: true,
+  }).eq("video_id", videoId);
+
+  await settleBinaryAndBracketBets(videoId, resolution, now, video.title || "A video", currentViews);
+  await settleParlayLegs(videoId, resolution, now);
+  await updateLeaderboards();
+
+  return { ok: true, resolution };
+}

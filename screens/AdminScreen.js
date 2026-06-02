@@ -1,10 +1,9 @@
 // screens/AdminScreen.js
-// Only accessible to yonazikri@gmail.com — checked server-side too
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable,
   ActivityIndicator, FlatList, TextInput, Alert,
-  Modal, Share, TouchableOpacity,
+  Modal, Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,7 +14,6 @@ import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
 
 const TABS = ['Overview', 'Users', 'Videos', 'Bets', 'Insights', 'Export'];
 
-// ── Stat Card ──────────────────────────────────────────────
 function StatCard({ label, value, icon, color }) {
   return (
     <View style={[styles.statCard, { borderColor: (color || COLORS.accent) + '44' }]}>
@@ -26,7 +24,6 @@ function StatCard({ label, value, icon, color }) {
   );
 }
 
-// ── Section Header ─────────────────────────────────────────
 function SectionHeader({ title, subtitle }) {
   return (
     <View style={styles.sectionHeader}>
@@ -39,23 +36,19 @@ function SectionHeader({ title, subtitle }) {
 // ── Overview Tab ───────────────────────────────────────────
 function OverviewTab({ stats }) {
   if (!stats) return <ActivityIndicator color={COLORS.accent} style={{ marginTop: 40 }} />;
-
   const accuracy = stats.overallAccuracy || 0;
   const topTags  = stats.topTags || [];
-
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
       <SectionHeader title="Platform Stats" subtitle="Live numbers" />
-
       <View style={styles.statsGrid}>
-        <StatCard label="Total Users"   value={stats.totalUsers?.toLocaleString()   || '0'} icon="👥" color={COLORS.blue} />
-        <StatCard label="Total Bets"    value={stats.totalBets?.toLocaleString()    || '0'} icon="⚡" color={COLORS.spark} />
-        <StatCard label="Active Videos" value={stats.activeVideos?.toLocaleString() || '0'} icon="🎬" color={COLORS.yes} />
+        <StatCard label="Total Users"   value={stats.totalUsers?.toLocaleString()    || '0'} icon="👥" color={COLORS.blue} />
+        <StatCard label="Total Bets"    value={stats.totalBets?.toLocaleString()     || '0'} icon="⚡" color={COLORS.spark} />
+        <StatCard label="Active Videos" value={stats.activeVideos?.toLocaleString()  || '0'} icon="🎬" color={COLORS.yes} />
         <StatCard label="Resolved"      value={stats.resolvedVideos?.toLocaleString()|| '0'} icon="🏁" color={COLORS.purple} />
         <StatCard label="Sparks Bet"    value={(stats.totalSparksWagered || 0).toLocaleString()} icon="💫" color={COLORS.spark} />
         <StatCard label="Avg Accuracy"  value={`${accuracy}%`} icon="🎯" color={accuracy > 50 ? COLORS.yes : COLORS.accent} />
       </View>
-
       <SectionHeader title="Top Prediction Tags" subtitle="Most used why-reasons" />
       <View style={styles.tagCloud}>
         {topTags.slice(0, 20).map((tag, i) => (
@@ -71,13 +64,13 @@ function OverviewTab({ stats }) {
 
 // ── Users Tab ──────────────────────────────────────────────
 function UsersTab() {
-  const [users,   setUsers]   = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [search,  setSearch]  = useState('');
-  const [page,    setPage]    = useState(0);
-  const [selected, setSelected] = useState(null);
-  const [adjustAmt, setAdjustAmt] = useState('');
-  const [adjustModal, setAdjustModal] = useState(false);
+  const [users,       setUsers]       = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [search,      setSearch]      = useState('');
+  const [page,        setPage]        = useState(0);
+  const [selected,    setSelected]    = useState(null);
+  const [adjustAmt,   setAdjustAmt]   = useState('');
+  const [actionModal, setActionModal] = useState(false);
 
   const load = useCallback(async (p = 0, q = '') => {
     setLoading(true);
@@ -91,22 +84,27 @@ function UsersTab() {
 
   useFocusEffect(useCallback(() => { load(0, ''); }, []));
 
-  const handleSearch = (v) => {
-    setSearch(v);
-    load(0, v);
-  };
+  const handleSearch = (v) => { setSearch(v); load(0, v); };
 
-  const handleAdjust = async () => {
-    if (!selected || !adjustAmt) return;
-    const amount = parseInt(adjustAmt);
-    if (isNaN(amount)) { Alert.alert('Invalid amount'); return; }
-    try {
-      const r = await callApi('/admin/adjustSparks', { userId: selected.id, amount });
-      Alert.alert('Done', `${selected.username} now has ${r.newBalance?.toLocaleString()} Sparks`);
-      setAdjustModal(false);
-      setAdjustAmt('');
-      load(0, search);
-    } catch (e) { Alert.alert('Error', e.message); }
+  const handleBan = async () => {
+    if (!selected) return;
+    Alert.alert(
+      selected.is_banned ? `Unban @${selected.username}?` : `Ban @${selected.username}?`,
+      selected.is_banned ? 'This will restore their full system access.' : 'This will completely disable their account and hide submissions.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: selected.is_banned ? 'Confirm Unban' : 'Confirm Ban', style: 'destructive', onPress: async () => {
+            try {
+              await callApi('/admin/banUser', { userId: selected.id });
+              Alert.alert('Success', `@${selected.username} account status has been toggled.`);
+              setActionModal(false);
+              load(0, search);
+            } catch (e) { Alert.alert('Error', e.message); }
+          },
+        },
+      ]
+    );
   };
 
   const correctPct = (u) => u.total_bets > 0
@@ -130,14 +128,16 @@ function UsersTab() {
             contentContainerStyle={{ padding: SPACING.sm, gap: 6, paddingBottom: 100 }}
             renderItem={({ item: u }) => (
               <Pressable
-                style={styles.userRow}
-                onPress={() => { setSelected(u); setAdjustModal(true); }}
+                style={[styles.userRow, u.is_banned && { opacity: 0.5, borderColor: COLORS.accent + '44' }]}
+                onPress={() => { setSelected(u); setActionModal(true); }}
               >
-                <View style={styles.userAvatar}>
+                <View style={[styles.userAvatar, u.is_banned && { backgroundColor: COLORS.muted }]}>
                   <Text style={styles.userAvatarText}>{(u.username || 'U')[0].toUpperCase()}</Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.userName}>{u.username} {u.is_admin ? '👑' : ''}</Text>
+                  <Text style={styles.userName}>
+                    {u.username} {u.is_admin ? '👑' : ''}{u.is_banned ? ' 🚫' : ''}
+                  </Text>
                   <Text style={styles.userMeta}>
                     {u.total_bets} bets · {correctPct(u)}% accurate · 🔥{u.current_streak}d
                   </Text>
@@ -155,28 +155,67 @@ function UsersTab() {
         )
       }
 
-      {/* Adjust Sparks Modal */}
-      <Modal visible={adjustModal} transparent animationType="slide" onRequestClose={() => setAdjustModal(false)}>
+      {/* User Action Modal */}
+      <Modal visible={actionModal} transparent animationType="slide" onRequestClose={() => setActionModal(false)}>
         <View style={modalStyles.overlay}>
           <View style={modalStyles.sheet}>
-            <Text style={modalStyles.title}>Adjust Sparks</Text>
-            <Text style={modalStyles.sub}>User: @{selected?.username}</Text>
-            <Text style={modalStyles.sub}>Current: ⚡ {(selected?.sparks || 0).toLocaleString()}</Text>
-            <TextInput
-              style={modalStyles.input}
-              placeholder="+500 or -100"
-              placeholderTextColor={COLORS.muted}
-              value={adjustAmt}
-              onChangeText={setAdjustAmt}
-              keyboardType="numeric"
-            />
-            <View style={modalStyles.btnRow}>
-              <Pressable style={[modalStyles.btn, { backgroundColor: COLORS.surfaceHigh }]} onPress={() => setAdjustModal(false)}>
-                <Text style={[modalStyles.btnLabel, { color: COLORS.muted }]}>Cancel</Text>
-              </Pressable>
-              <Pressable style={[modalStyles.btn, { backgroundColor: COLORS.accent }]} onPress={handleAdjust}>
-                <Text style={modalStyles.btnLabel}>Apply</Text>
-              </Pressable>
+            <Text style={modalStyles.title}>@{selected?.username}</Text>
+            <Text style={modalStyles.sub}>⚡ {(selected?.sparks || 0).toLocaleString()} Sparks · {selected?.total_bets || 0} bets</Text>
+
+            <View style={{ width: '100%', gap: 8 }}>
+              <Text style={[modalStyles.sub, { marginTop: 8 }]}>Adjust Sparks</Text>
+              <TextInput
+                style={modalStyles.input}
+                placeholder="+500 or -100"
+                placeholderTextColor={COLORS.muted}
+                value={adjustAmt}
+                onChangeText={setAdjustAmt}
+                keyboardType="numeric"
+              />
+              <View style={modalStyles.btnRow}>
+                <Pressable style={[modalStyles.btn, { backgroundColor: COLORS.surfaceHigh }]} onPress={() => { setActionModal(false); setAdjustAmt(''); }}>
+                  <Text style={[modalStyles.btnLabel, { color: COLORS.muted }]}>Cancel</Text>
+                </Pressable>
+                <Pressable style={[modalStyles.btn, { backgroundColor: COLORS.accent }]} onPress={async () => {
+                  if (!adjustAmt) return;
+                  const amount = parseInt(adjustAmt);
+                  if (isNaN(amount)) { Alert.alert('Invalid amount'); return; }
+                  try {
+                    const r = await callApi('/admin/adjustSparks', { userId: selected.id, amount });
+                    Alert.alert('Done', `${selected.username} now has ${r.newBalance?.toLocaleString()} Sparks`);
+                    setActionModal(false);
+                    setAdjustAmt('');
+                    load(0, search);
+                  } catch (e) { Alert.alert('Error', e.message); }
+                }}>
+                  <Text style={modalStyles.btnLabel}>Apply</Text>
+                </Pressable>
+              </View>
+
+              {/* Explicitly Labeled Ban/Unban Operations */}
+              {!selected?.is_admin && (
+                <Pressable
+                  style={[
+                    modalStyles.btn, 
+                    { 
+                      flex: 0,
+                      alignSelf: 'stretch',
+                      backgroundColor: selected?.is_banned ? COLORS.yes + '15' : '#3A0010', 
+                      borderWidth: 1, 
+                      borderColor: selected?.is_banned ? COLORS.yes + '66' : COLORS.accent + '66',
+                      marginTop: 12,
+                      paddingVertical: 16
+                    }
+                  ]}
+                  onPress={handleBan}
+                >
+                  <Text style={[modalStyles.btnLabel, { color: selected?.is_banned ? COLORS.yes : COLORS.accent, fontWeight: '700', fontSize: 12 }]}>
+                    {selected?.is_banned 
+                      ? '🔓 UNBAN USER: RESTORE POOL ACCESS & SHOW SUBMISSIONS' 
+                      : '🚫 BAN USER: TERMINATE SYSTEM ACCESS & HIDE SUBMISSIONS'}
+                  </Text>
+                </Pressable>
+              )}
             </View>
           </View>
         </View>
@@ -187,9 +226,11 @@ function UsersTab() {
 
 // ── Videos Tab ─────────────────────────────────────────────
 function VideosTab() {
-  const [videos,  setVideos]  = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [status,  setStatus]  = useState('active');
+  const [videos,        setVideos]        = useState([]);
+  const [loading,       setLoading]       = useState(true);
+  const [status,        setStatus]        = useState('active');
+  const [resolveModal,  setResolveModal]  = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState(null);
 
   const load = useCallback(async (s = 'active') => {
     setLoading(true);
@@ -205,13 +246,30 @@ function VideosTab() {
   const handleRemove = async (videoId) => {
     Alert.alert('Remove Video', 'Mark this video as flagged and hide it?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => {
-        try {
-          await callApi('/admin/removeVideo', { videoId });
-          load(status);
-        } catch (e) { Alert.alert('Error', e.message); }
-      }},
+      {
+        text: 'Remove', style: 'destructive', onPress: async () => {
+          try { await callApi('/admin/removeVideo', { videoId }); load(status); }
+          catch (e) { Alert.alert('Error', e.message); }
+        },
+      },
     ]);
+  };
+
+  const handleResolve = async (resolution) => {
+    if (!selectedVideo) return;
+    try {
+      if (resolution === 'auto') {
+        // Invoke the resolve pipeline for this specific video via dedicated admin route
+        await callApi('/admin/resolveVideoAuto', { videoId: selectedVideo.id });
+        Alert.alert('Auto-Resolved', 'Video processed through automated index check successfully.');
+      } else {
+        await callApi('/admin/resolveVideo', { videoId: selectedVideo.id, resolution });
+        Alert.alert('Manually Resolved', `Video marked as ${resolution === 'yes' ? '🚀 Viral' : '📉 Flopped'}`);
+      }
+      setResolveModal(false);
+      setSelectedVideo(null);
+      load(status);
+    } catch (e) { Alert.alert('Error', e.message); }
   };
 
   const fmtViews = (n) => {
@@ -223,7 +281,6 @@ function VideosTab() {
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Status filter */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow} contentContainerStyle={{ gap: 8, padding: SPACING.sm }}>
         {['active', 'resolved_yes', 'resolved_no', 'flagged'].map(s => (
           <Pressable key={s} style={[styles.filterChip, status === s && styles.filterChipActive]} onPress={() => { setStatus(s); load(s); }}>
@@ -249,19 +306,82 @@ function VideosTab() {
                     ❤️ {(v.likes_at_ingestion || 0).toLocaleString()} · 👁 {fmtViews(v.current_views)} · 🎯 {v.total_bets} bets
                   </Text>
                   <Text style={styles.videoMeta}>
-                    Yes: {v.yes_bets || 0} · No: {v.no_bets || 0} · {v.categories?.join(', ') || 'no tags'}
+                    Yes: {v.yes_bets || 0} · No: {v.no_bets || 0} · {v.why_reasons?.join(', ') || 'no tags'}
                   </Text>
                 </View>
                 {status === 'active' && (
-                  <Pressable onPress={() => handleRemove(v.id)} hitSlop={8}>
-                    <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
-                  </Pressable>
+                  <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                    <Pressable
+                      onPress={() => { setSelectedVideo(v); setResolveModal(true); }}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="checkmark-done-outline" size={20} color={COLORS.yes} />
+                    </Pressable>
+                    <Pressable onPress={() => handleRemove(v.id)} hitSlop={8}>
+                      <Ionicons name="trash-outline" size={18} color={COLORS.accent} />
+                    </Pressable>
+                  </View>
                 )}
               </View>
             )}
           />
         )
       }
+
+      {/* Choice Between Manual or Automated Resolution */}
+      <Modal visible={resolveModal} transparent animationType="slide" onRequestClose={() => setResolveModal(false)}>
+        <View style={modalStyles.overlay}>
+          <View style={modalStyles.sheet}>
+            <Text style={modalStyles.title}>Resolve Video</Text>
+            <Text style={modalStyles.sub} numberOfLines={1}>{selectedVideo?.title || 'Untitled'}</Text>
+            <Text style={[modalStyles.sub, { textAlign: 'center', lineHeight: 18, marginBottom: 8 }]}>
+              Trigger the core automated calculation routine via API index or explicitly override metrics manually below.
+            </Text>
+
+            {/* Strategy 1: Auto Resolution Choice */}
+            <Pressable
+              onPress={() => handleResolve('auto')}
+              style={{
+                width: '100%',
+                paddingVertical: 18,
+                paddingHorizontal: 16,
+                borderRadius: RADIUS.md,
+                backgroundColor: '#1a0a2e',
+                borderWidth: 1.5,
+                borderColor: '#8b5cf6',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text style={{ color: '#c4b5fd', fontFamily: FONTS.body, fontWeight: '700', fontSize: 14, textAlign: 'center' }}>
+                🤖 Run Auto-Resolution Engine (Live Views)
+              </Text>
+            </Pressable>
+            <View style={{ height: 1, backgroundColor: COLORS.border, width: '100%', marginVertical: 8 }} />
+
+            {/* Strategy 2: Manual Overrides Choice */}
+            <Text style={[modalStyles.sub, { fontSize: 10, letterSpacing: 1, fontWeight: '700', alignSelf: 'flex-start' }]}>MANUAL OVERRIDE OPTIONS</Text>
+            <View style={[modalStyles.btnRow, { width: '100%' }]}>
+              <Pressable
+                style={[modalStyles.btn, { backgroundColor: COLORS.yes + '22', borderWidth: 1, borderColor: COLORS.yes + '66' }]}
+                onPress={() => handleResolve('yes')}
+              >
+                <Text style={[modalStyles.btnLabel, { color: COLORS.yes }]}>🚀 Went Viral</Text>
+              </Pressable>
+              <Pressable
+                style={[modalStyles.btn, { backgroundColor: COLORS.accent + '22', borderWidth: 1, borderColor: COLORS.accent + '66' }]}
+                onPress={() => handleResolve('no')}
+              >
+                <Text style={[modalStyles.btnLabel, { color: COLORS.accent }]}>📉 Flopped</Text>
+              </Pressable>
+            </View>
+
+            <Pressable style={{ paddingVertical: 10 }} onPress={() => setResolveModal(false)}>
+              <Text style={{ color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13 }}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -292,7 +412,6 @@ function BetsTab() {
           </Pressable>
         ))}
       </ScrollView>
-
       {loading
         ? <ActivityIndicator color={COLORS.accent} style={{ marginTop: 40 }} />
         : (
@@ -305,9 +424,7 @@ function BetsTab() {
                 <View style={[styles.betSide, { backgroundColor: b.side === 'yes' ? COLORS.yes : COLORS.accent }]} />
                 <View style={{ flex: 1, padding: SPACING.sm }}>
                   <Text style={styles.betSideLabel}>{b.side === 'yes' ? '🚀 VIRAL' : '📉 FLOP'} · {b.sparks_wagered} ⚡</Text>
-                  <Text style={styles.betMeta}>
-                    Odds: {b.odds_at_bet?.toFixed(2)}× · Payout: {b.potential_payout} · Status: {b.status}
-                  </Text>
+                  <Text style={styles.betMeta}>Odds: {b.odds_at_bet?.toFixed(2)}× · Payout: {b.potential_payout} · Status: {b.status}</Text>
                   {b.why_reasons?.length > 0 && (
                     <Text style={styles.betTags}>Tags: {b.why_reasons.join(', ')}</Text>
                   )}
@@ -329,68 +446,186 @@ function BetsTab() {
 function InsightsTab() {
   const [insights,  setInsights]  = useState([]);
   const [loading,   setLoading]   = useState(true);
-  const [fromDate,  setFromDate]  = useState('');
-  const [toDate,    setToDate]    = useState('');
-
-  // Aggregate why_reasons into counts
-  const aggregated = React.useMemo(() => {
-    const counts: Record<string, { total: number; yes: number; no: number; sparks: number }> = {};
-    for (const row of insights) {
-      for (const reason of (row.why_reasons || [])) {
-        if (!counts[reason]) counts[reason] = { total: 0, yes: 0, no: 0, sparks: 0 };
-        counts[reason].total++;
-        counts[reason][row.side === 'yes' ? 'yes' : 'no']++;
-        counts[reason].sparks += row.wagered || 0;
-      }
-    }
-    return Object.entries(counts)
-      .map(([reason, data]) => ({ reason, ...data, viralPct: Math.round((data.yes / data.total) * 100) }))
-      .sort((a, b) => b.total - a.total);
-  }, [insights]);
+  const [view,      setView]      = useState('tags');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params: Record<string, string> = {};
-      if (fromDate) params.from = fromDate;
-      if (toDate)   params.to   = toDate;
-      const r = await getApi('/admin/insights', params);
+      const r = await getApi('/admin/insights', {});
       setInsights(r.insights || []);
     } catch (e) { Alert.alert('Error', e.message); }
     finally { setLoading(false); }
-  }, [fromDate, toDate]);
+  }, []);
 
   useFocusEffect(useCallback(() => { load(); }, []));
 
-  return (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: SPACING.sm, gap: SPACING.sm, paddingBottom: 100 }}>
-      <Text style={styles.insightTotal}>
-        {insights.length} total predictions · {aggregated.length} unique tags
-      </Text>
-
-      <SectionHeader title="Tag Intelligence" subtitle="What users think makes videos go viral" />
-
-      {loading
-        ? <ActivityIndicator color={COLORS.accent} style={{ marginTop: 40 }} />
-        : aggregated.map((item, i) => (
-          <View key={item.reason} style={styles.insightRow}>
-            <View style={styles.insightLeft}>
-              <Text style={styles.insightRank}>#{i + 1}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.insightReason}>{item.reason.replace(/_/g, ' ')}</Text>
-                <Text style={styles.insightMeta}>{item.total} predictions · ⚡{item.sparks?.toLocaleString()} wagered</Text>
-              </View>
-            </View>
-            <View style={styles.insightRight}>
-              <Text style={[styles.insightViralPct, { color: item.viralPct > 50 ? COLORS.yes : COLORS.accent }]}>
-                {item.viralPct}% viral
-              </Text>
-              <Text style={styles.insightSplit}>{item.yes}Y / {item.no}N</Text>
-            </View>
-          </View>
-        ))
+  const tagStats = React.useMemo(() => {
+    const m = {};
+    for (const row of insights) {
+      for (const reason of (row.why_reasons || [])) {
+        if (!m[reason]) m[reason] = { total: 0, yes: 0, no: 0, sparks: 0, won: 0 };
+        m[reason].total++;
+        m[reason][row.side === 'yes' ? 'yes' : 'no']++;
+        m[reason].sparks += row.wagered || 0;
+        if (row.outcome === 'won') m[reason].won++;
       }
-    </ScrollView>
+    }
+    return Object.entries(m)
+      .map(([tag, d]) => ({
+        tag,
+        total: d.total,
+        viralBias: Math.round((d.yes / d.total) * 100),
+        accuracy: d.total > 0 ? Math.round((d.won / d.total) * 100) : null,
+        sparks: d.sparks,
+        yesCount: d.yes,
+        noCount: d.no,
+      }))
+      .filter(t => t.total >= 3)
+      .sort((a, b) => b.total - a.total);
+  }, [insights]);
+
+  const categoryStats = React.useMemo(() => {
+    const m = {};
+    for (const row of insights) {
+      for (const cat of (row.categories || [])) {
+        if (!m[cat]) m[cat] = { total: 0, viralBets: 0, flopBets: 0, totalSparks: 0, highConviction: 0 };
+        m[cat].total++;
+        if (row.side === 'yes') m[cat].viralBets++;
+        else m[cat].flopBets++;
+        m[cat].totalSparks += row.wagered || 0;
+        if ((row.wagered || 0) >= 200) m[cat].highConviction++;
+      }
+    }
+    return Object.entries(m)
+      .map(([cat, d]) => ({
+        cat,
+        total: d.total,
+        viralBias: Math.round((d.viralBets / d.total) * 100),
+        avgWager: d.total > 0 ? Math.round(d.totalSparks / d.total) : 0,
+        highConvictionPct: d.total > 0 ? Math.round((d.highConviction / d.total) * 100) : 0,
+      }))
+      .filter(c => c.total >= 5)
+      .sort((a, b) => b.total - a.total);
+  }, [insights]);
+
+  const convictionStats = React.useMemo(() => {
+    const buckets = [
+      { label: 'Small (≤50)',   min: 0,   max: 50  },
+      { label: 'Mid (51–150)',  min: 51,  max: 150 },
+      { label: 'Large (151–)',  min: 151, max: Infinity },
+    ];
+    return buckets.map(b => {
+      const rows = insights.filter(r => {
+        const w = r.wagered || 0;
+        return w > b.min && w <= b.max;
+      });
+      const viralBets = rows.filter(r => r.side === 'yes').length;
+      const won = rows.filter(r => r.outcome === 'won').length;
+      return {
+        label: b.label,
+        count: rows.length,
+        viralBias: rows.length > 0 ? Math.round((viralBets / rows.length) * 100) : 0,
+        accuracy: rows.length > 0 ? Math.round((won / rows.length) * 100) : null,
+        totalSparks: rows.reduce((s, r) => s + (r.wagered || 0), 0),
+      };
+    });
+  }, [insights]);
+
+  if (loading) return <ActivityIndicator color={COLORS.accent} style={{ marginTop: 40 }} />;
+
+  return (
+    <View style={{ flex: 1 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow} contentContainerStyle={{ gap: 8, padding: SPACING.sm }}>
+        {[['tags', '🏷 Tag Intelligence'], ['categories', '🎬 Category Virality'], ['conviction', '💰 Conviction Signal']].map(([id, label]) => (
+          <Pressable key={id} style={[styles.filterChip, view === id && styles.filterChipActive]} onPress={() => setView(id)}>
+            <Text style={[styles.filterChipLabel, view === id && { color: '#fff' }]}>{label}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      <ScrollView contentContainerStyle={{ padding: SPACING.sm, gap: 8, paddingBottom: 100 }}>
+        <Text style={styles.insightTotal}>{insights.length} total predictions</Text>
+
+        {view === 'tags' && (
+          <>
+            <SectionHeader title="Tag Intelligence" subtitle="Which tags predict virality? High viral-bias + high usage = reliable signal" />
+            {tagStats.map((item, i) => (
+              <View key={item.tag} style={styles.insightRow}>
+                <View style={styles.insightLeft}>
+                  <Text style={styles.insightRank}>#{i + 1}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.insightReason}>{item.tag.replace(/_/g, ' ')}</Text>
+                    <Text style={styles.insightMeta}>
+                      {item.total} uses · ⚡{item.sparks?.toLocaleString()} wagered · {item.yesCount}Y / {item.noCount}N
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.insightRight}>
+                  <Text style={[styles.insightViralPct, { color: item.viralBias > 60 ? COLORS.yes : item.viralBias < 40 ? COLORS.accent : COLORS.muted }]}>
+                    {item.viralBias}% viral
+                  </Text>
+                  {item.accuracy !== null && (
+                    <Text style={[styles.insightSplit, { color: item.accuracy > 55 ? COLORS.yes : COLORS.muted }]}>
+                      {item.accuracy}% correct
+                    </Text>
+                  )}
+                </View>
+              </View>
+            ))}
+          </>
+        )}
+
+        {view === 'categories' && (
+          <>
+            <SectionHeader title="Category Virality" subtitle="Which content categories do users believe in most?" />
+            {categoryStats.map((item, i) => (
+              <View key={item.cat} style={styles.insightRow}>
+                <View style={styles.insightLeft}>
+                  <Text style={styles.insightRank}>#{i + 1}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.insightReason}>{item.cat}</Text>
+                    <Text style={styles.insightMeta}>
+                      {item.total} bets · avg ⚡{item.avgWager} · {item.highConvictionPct}% high-conviction
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.insightRight}>
+                  <Text style={[styles.insightViralPct, { color: item.viralBias > 60 ? COLORS.yes : item.viralBias < 40 ? COLORS.accent : COLORS.muted }]}>
+                    {item.viralBias}% viral bias
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </>
+        )}
+
+        {view === 'conviction' && (
+          <>
+            <SectionHeader title="Conviction Signal" subtitle="Do users who bet more know more?" />
+            {convictionStats.map((item) => (
+              <View key={item.label} style={[styles.insightRow, { flexDirection: 'column', gap: 8 }]}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.insightReason}>{item.label}</Text>
+                  <Text style={[styles.insightViralPct, { color: COLORS.spark }]}>{item.count} bets</Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: SPACING.sm }}>
+                  <View style={styles.convictionStat}>
+                    <Text style={styles.convictionVal}>{item.viralBias}%</Text>
+                    <Text style={styles.convictionLabel}>picked viral</Text>
+                  </View>
+                  <View style={styles.convictionStat}>
+                    <Text style={[styles.convictionVal, { color: item.accuracy > 55 ? COLORS.yes : COLORS.accent }]}>
+                      {item.accuracy !== null ? `${item.accuracy}%` : '—'}
+                    </Text>
+                    <Text style={styles.convictionLabel}>accurate</Text>
+                  </View>
+                </View>
+              </View>
+            ))}
+          </>
+        )}
+      </ScrollView>
+    </View>
   );
 }
 
@@ -411,45 +646,40 @@ function ExportTab() {
 
   const handleShare = async () => {
     if (!result) return;
-    // Convert rows to CSV
     const rows = result.rows || [];
-    if (rows.length === 0) { Alert.alert('No data to export'); return; }
+    if (rows.length === 0) { Alert.alert('No data'); return; }
     const headers = Object.keys(rows[0]).join(',');
     const csv = [headers, ...rows.map(r => Object.values(r).map(v => `"${String(v || '').replace(/"/g, '""')}"`).join(','))].join('\n');
     try {
       await Share.share({ message: csv, title: `BetTok ${result.type} export` });
-    } catch (e) { Alert.alert('Share failed', e.message); }
+    } catch (e) { Alert.alert('Failed', e.message); }
   };
 
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ padding: SPACING.md, gap: SPACING.md, paddingBottom: 100 }}>
       <SectionHeader title="Data Export" subtitle="Download platform data as CSV" />
-
       {[
-        { type: 'insights', label: '🧠 Prediction Insights', desc: 'All why-reason tags, wagered amounts, sides — the core data product' },
-        { type: 'users',    label: '👥 User Data',           desc: 'Usernames, scores, bet counts, streaks — anonymized stats' },
-        { type: 'videos',   label: '🎬 Video Data',          desc: 'All videos with bet counts, categories, resolution outcomes' },
+        { type: 'insights',   label: '🧠 Prediction Insights',  desc: 'All why-reason tags, wagered amounts, and outcomes.' },
+        { type: 'users',      label: '👥 User Data',             desc: 'Usernames, scores, bet counts, streaks.' },
+        { type: 'videos',     label: '🎬 Video Data',             desc: 'All videos with bet counts and resolutions.' },
       ].map(({ type, label, desc }) => (
         <View key={type} style={styles.exportCard}>
           <Text style={styles.exportLabel}>{label}</Text>
           <Text style={styles.exportDesc}>{desc}</Text>
           <Pressable style={styles.exportBtn} onPress={() => handleExport(type)} disabled={loading}>
-            {loading
-              ? <ActivityIndicator color="#000" size="small" />
-              : (
-                <LinearGradient colors={['#FF3B5C', '#CC1F3F']} style={styles.exportBtnGrad} start={[0,0]} end={[1,0]}>
-                  <Ionicons name="download-outline" size={14} color="#fff" />
-                  <Text style={styles.exportBtnLabel}>Load Data</Text>
-                </LinearGradient>
-              )
-            }
+            {loading ? <ActivityIndicator color="#000" size="small" /> : (
+              <LinearGradient colors={['#FF3B5C', '#CC1F3F']} style={styles.exportBtnGrad} start={[0, 0]} end={[1, 0]}>
+                <Ionicons name="download-outline" size={14} color="#fff" />
+                <Text style={styles.exportBtnLabel}>Load Data</Text>
+              </LinearGradient>
+            )}
           </Pressable>
           {result?.type === type && (
             <View style={styles.exportResult}>
               <Text style={styles.exportResultText}>✅ {result.count} rows loaded</Text>
               <Pressable style={styles.shareBtn} onPress={handleShare}>
                 <Ionicons name="share-outline" size={14} color={COLORS.accent} />
-                <Text style={styles.shareBtnLabel}>Share as CSV</Text>
+                <Text style={styles.shareBtnLabel}>Share CSV</Text>
               </Pressable>
             </View>
           )}
@@ -477,8 +707,7 @@ export default function AdminScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Header */}
-      <LinearGradient colors={['#1A0010', '#080810']} style={styles.header} start={[0,0]} end={[1,1]}>
+      <LinearGradient colors={['#1A0010', '#080810']} style={styles.header} start={[0, 0]} end={[1, 1]}>
         <View>
           <Text style={styles.headerTitle}>👑 ADMIN PANEL</Text>
           <Text style={styles.headerSub}>yonazikri@gmail.com</Text>
@@ -488,7 +717,6 @@ export default function AdminScreen() {
         </Pressable>
       </LinearGradient>
 
-      {/* Tab bar */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={{ gap: 4, padding: 8 }}>
         {TABS.map(tab => (
           <Pressable key={tab} style={[styles.tabBtn, activeTab === tab && styles.tabBtnActive]} onPress={() => setActiveTab(tab)}>
@@ -497,7 +725,6 @@ export default function AdminScreen() {
         ))}
       </ScrollView>
 
-      {/* Tab content */}
       <View style={{ flex: 1 }}>
         {activeTab === 'Overview' && <OverviewTab stats={stats} />}
         {activeTab === 'Users'    && <UsersTab />}
@@ -574,6 +801,10 @@ const styles = StyleSheet.create({
   insightViralPct: { fontFamily: FONTS.display, fontSize: 16 },
   insightSplit: { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10 },
 
+  convictionStat:  { flex: 1, backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.sm, padding: 10, alignItems: 'center', gap: 2 },
+  convictionVal:   { color: COLORS.text, fontFamily: FONTS.display, fontSize: 18 },
+  convictionLabel: { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 9, textAlign: 'center' },
+
   exportCard:   { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: SPACING.md, gap: SPACING.sm, borderWidth: 1, borderColor: COLORS.border },
   exportLabel:  { color: COLORS.text, fontFamily: FONTS.body, fontSize: 14, fontWeight: '700' },
   exportDesc:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12, lineHeight: 18 },
@@ -593,6 +824,6 @@ const modalStyles = StyleSheet.create({
   sub:      { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 13 },
   input:    { backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: SPACING.sm, paddingVertical: 14, color: COLORS.text, fontFamily: FONTS.body, fontSize: 16 },
   btnRow:   { flexDirection: 'row', gap: SPACING.sm },
-  btn:      { flex: 1, paddingVertical: 14, borderRadius: RADIUS.md, alignItems: 'center' },
-  btnLabel: { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 14 },
+  btn:      { flex: 1, paddingVertical: 14, borderRadius: RADIUS.md, alignItems: 'center', justifyContent: 'center' },
+  btnLabel: { color: '#fff', fontFamily: FONTS.body, fontWeight: '700', fontSize: 14, textAlign: 'center' },
 });

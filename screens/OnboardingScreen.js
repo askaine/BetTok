@@ -97,7 +97,7 @@ export default function OnboardingScreen({ onDone }) {
         showsHorizontalScrollIndicator={false}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { x: scrollX } } }],
-          { useNativeDriver: true }
+          { useNativeDriver: false }
         )}
         onViewableItemsChanged={onViewable}
         viewabilityConfig={{ viewAreaCoveragePercentThreshold: 50 }}

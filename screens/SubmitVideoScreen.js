@@ -1,5 +1,4 @@
 // screens/SubmitVideoScreen.js
-// KEY FIX: properly reads sharedUrl from route.params and pre-fills input
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TextInput, Pressable,
@@ -12,21 +11,7 @@ import * as Haptics from 'expo-haptics';
 import { callApi } from '../Supabaseconfig';
 import { COLORS, FONTS, RADIUS, SPACING } from '../theme';
 import { useNavigation, useRoute } from '@react-navigation/native';
-
-const CATEGORIES = [
-  { id: 'comedy',    emoji: '😂', label: 'Comedy' },
-  { id: 'dance',     emoji: '💃', label: 'Dance' },
-  { id: 'food',      emoji: '🍔', label: 'Food' },
-  { id: 'beauty',    emoji: '💄', label: 'Beauty' },
-  { id: 'fitness',   emoji: '💪', label: 'Fitness' },
-  { id: 'pets',      emoji: '🐾', label: 'Pets' },
-  { id: 'gaming',    emoji: '🎮', label: 'Gaming' },
-  { id: 'news',      emoji: '📰', label: 'News' },
-  { id: 'music',     emoji: '🎵', label: 'Music' },
-  { id: 'fashion',   emoji: '👗', label: 'Fashion' },
-  { id: 'education', emoji: '📚', label: 'Education' },
-  { id: 'lifestyle', emoji: '✨', label: 'Lifestyle' },
-];
+import TagSearch from '../components/TagSearch';
 
 function ResultModal({ visible, type, title, message, onClose, onAction, actionLabel }) {
   const colors = { success: COLORS.yes, error: COLORS.accent, warning: COLORS.spark };
@@ -60,38 +45,24 @@ export default function SubmitVideoScreen() {
   const route      = useRoute();
 
   const [url,        setUrl]        = useState('');
-  const [categories, setCategories] = useState([]);
+  const [viralTags,  setViralTags]  = useState([]); // "why might this go viral" tags
   const [submitting, setSubmitting] = useState(false);
   const [modal,      setModal]      = useState({ visible: false });
-  const [urlFilled,  setUrlFilled]  = useState(false); // tracks if pre-filled from share
+  const [urlFilled,  setUrlFilled]  = useState(false);
 
-  const inputRef    = useRef(null);
-  const bannerAnim  = useRef(new Animated.Value(0)).current;
+  const inputRef   = useRef(null);
+  const bannerAnim = useRef(new Animated.Value(0)).current;
 
-  // ── KEY FIX: Pre-fill URL from share intent ────────────
   useEffect(() => {
     const sharedUrl = route.params?.sharedUrl;
     if (sharedUrl && typeof sharedUrl === 'string' && sharedUrl.trim()) {
-      // Strip tracking params for cleaner URL
       const clean = sharedUrl.split('?')[0];
       setUrl(clean);
       setUrlFilled(true);
-
-      // Animate the "URL detected" banner in
-      Animated.spring(bannerAnim, {
-        toValue: 1, tension: 80, friction: 12, useNativeDriver: true,
-      }).start();
-
+      Animated.spring(bannerAnim, { toValue: 1, tension: 80, friction: 12, useNativeDriver: true }).start();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
   }, [route.params?.sharedUrl]);
-
-  const toggleCategory = async (id) => {
-    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setCategories(prev =>
-      prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
-    );
-  };
 
   const clearUrl = () => {
     setUrl('');
@@ -107,31 +78,32 @@ export default function SubmitVideoScreen() {
       return;
     }
     if (!trimmed.includes('tiktok.com')) {
-      setModal({ visible: true, type: 'warning', title: 'Invalid URL', message: 'This doesn\'t look like a TikTok link. Make sure it contains tiktok.com.' });
+      setModal({ visible: true, type: 'warning', title: 'Invalid URL', message: "This doesn't look like a TikTok link." });
       return;
     }
-    if (categories.length === 0) {
-      setModal({ visible: true, type: 'warning', title: 'Pick a category', message: 'Tag at least one category to help the community predict better.' });
+    if (viralTags.length === 0) {
+      setModal({ visible: true, type: 'warning', title: 'Tag Required', message: 'Please select at least 1 prediction tag before submitting.' });
       return;
     }
 
     setSubmitting(true);
     try {
-      const result = await callApi('/ingestVideo', { tiktokUrl: trimmed, categories });
+      // Pass viralTags as whyReasons so they're stored as submitter insight
+      const result = await callApi('/ingestVideo', { tiktokUrl: trimmed, categories: [], whyReasons: viralTags });
       if (result.accepted) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         setModal({
           visible: true, type: 'success',
           title: '⚡ Video submitted!',
-          message: 'It\'s now live in the prediction pool. Earn bonus Sparks if it goes viral!',
+          message: "It's now live in the prediction pool. Earn bonus Sparks if it goes viral!",
           actionLabel: 'Back to Feed',
           onAction: () => { setModal({ visible: false }); setTimeout(() => navigation.goBack(), 150); },
         });
         setUrl('');
-        setCategories([]);
+        setViralTags([]);
         setUrlFilled(false);
       } else {
-        setModal({ visible: true, type: 'error', title: 'Not eligible', message: result.reason || 'This video doesn\'t meet the criteria. Try a different one.' });
+        setModal({ visible: true, type: 'error', title: 'Not eligible', message: result.reason || 'This video doesn\'t meet the criteria.' });
       }
     } catch (err) {
       setModal({ visible: true, type: 'error', title: 'Something went wrong', message: err.message || 'Try again.' });
@@ -144,7 +116,6 @@ export default function SubmitVideoScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>SUBMIT VIDEO</Text>
         <Pressable onPress={() => navigation.goBack()} hitSlop={12}>
@@ -152,7 +123,6 @@ export default function SubmitVideoScreen() {
         </Pressable>
       </View>
 
-      {/* Share intent detected banner */}
       <Animated.View style={[
         styles.sharedBanner,
         {
@@ -169,21 +139,11 @@ export default function SubmitVideoScreen() {
       </Animated.View>
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          {/* URL Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>TIKTOK URL</Text>
-            {!urlFilled && (
-              <Text style={styles.sectionSub}>
-                On TikTok → tap Share → Copy Link → paste here.{'\n'}
-                Or tap Share → More → BetTok to auto-fill.
-              </Text>
-            )}
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
+          {/* URL input */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>TIKTOK URL <Text style={styles.required}>*required</Text></Text>
             <View style={[
               styles.inputWrapper,
               url.length > 0 && styles.inputWrapperFilled,
@@ -201,10 +161,7 @@ export default function SubmitVideoScreen() {
                 placeholder="https://www.tiktok.com/@user/video/..."
                 placeholderTextColor={COLORS.muted}
                 value={url}
-                onChangeText={(v) => {
-                  setUrl(v);
-                  if (urlFilled && !v) { setUrlFilled(false); }
-                }}
+                onChangeText={(v) => { setUrl(v); if (urlFilled && !v) setUrlFilled(false); }}
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="url"
@@ -221,10 +178,10 @@ export default function SubmitVideoScreen() {
           <View style={styles.eligibilityCard}>
             <Text style={styles.eligibilityTitle}>✅ AUTO-CHECKED ON SUBMIT</Text>
             {[
-              ['heart-outline',    '500 – 5,000 likes'],
-              ['time-outline',     'Posted within the last 7 days'],
-              ['eye-off-outline',  'Under 50,000 views'],
-              ['copy-outline',     'Not already in the pool'],
+              ['heart-outline',   '500 – 5,000 likes'],
+              ['time-outline',    'Posted within the last 7 days'],
+              ['eye-off-outline', 'Under 50,000 views'],
+              ['copy-outline',    'Not already in the pool'],
             ].map(([icon, text]) => (
               <View key={text} style={styles.eligibilityRow}>
                 <Ionicons name={icon} size={13} color={COLORS.yes} />
@@ -233,45 +190,31 @@ export default function SubmitVideoScreen() {
             ))}
           </View>
 
-          {/* Category selector */}
+          {/* Why might this go viral — tag search */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>
-              CATEGORY <Text style={styles.required}>*required</Text>
+            <Text style={styles.sectionTitle}>WHY MIGHT THIS GO VIRAL? <Text style={styles.required}>*required (minimum 1)</Text></Text>
+            <Text style={styles.sectionSub}>
+              Tag what makes this video special. This requirement powers the prediction market intelligence.
             </Text>
-            <Text style={styles.sectionSub}>What type of content is this?</Text>
-            <View style={styles.categoryGrid}>
-              {CATEGORIES.map(cat => {
-                const selected = categories.includes(cat.id);
-                return (
-                  <Pressable
-                    key={cat.id}
-                    style={[styles.categoryPill, selected && styles.categoryPillActive]}
-                    onPress={() => toggleCategory(cat.id)}
-                  >
-                    <Text style={styles.categoryEmoji}>{cat.emoji}</Text>
-                    <Text style={[styles.categoryLabel, selected && { color: COLORS.text }]}>
-                      {cat.label}
-                    </Text>
-                    {selected && <Ionicons name="checkmark-circle" size={12} color={COLORS.yes} />}
-                  </Pressable>
-                );
-              })}
-            </View>
+            <TagSearch
+              selectedTags={viralTags}
+              onChange={setViralTags}
+              maxTags={5}
+              placeholder="e.g. strong_hook, trending_sound…"
+            />
           </View>
 
-          {/* Disclaimer */}
           <Text style={styles.disclaimer}>
-            By submitting, you confirm this is a publicly available TikTok video and you agree to our Terms of Service. Your prediction and category data may be used for aggregated analytics.
+            By submitting, you confirm this is a publicly available TikTok video and agree to our Terms of Service. Your prediction and analytical tag data may be used for aggregated insights.
           </Text>
 
-          {/* Submit button */}
           <Pressable
-            style={[styles.submitBtn, (submitting || !url.trim()) && styles.submitBtnDisabled]}
+            style={[styles.submitBtn, (submitting || !url.trim() || viralTags.length === 0) && styles.submitBtnDisabled]}
             onPress={handleSubmit}
-            disabled={submitting || !url.trim()}
+            disabled={submitting || !url.trim() || viralTags.length === 0}
           >
             <LinearGradient
-              colors={isValidUrl ? ['#FF3B5C', '#CC1F3F'] : ['#2A2A2A', '#1A1A1A']}
+              colors={(isValidUrl && viralTags.length > 0) ? ['#FF3B5C', '#CC1F3F'] : ['#2A2A2A', '#1A1A1A']}
               style={styles.submitBtnGrad}
               start={[0, 0]} end={[1, 0]}
             >
@@ -279,8 +222,8 @@ export default function SubmitVideoScreen() {
                 ? <ActivityIndicator color="#fff" />
                 : (
                   <View style={styles.submitBtnInner}>
-                    <Ionicons name="flash" size={16} color={isValidUrl ? '#fff' : COLORS.muted} />
-                    <Text style={[styles.submitBtnLabel, !isValidUrl && { color: COLORS.muted }]}>
+                    <Ionicons name="flash" size={16} color={(isValidUrl && viralTags.length > 0) ? '#fff' : COLORS.muted} />
+                    <Text style={[styles.submitBtnLabel, (!isValidUrl || viralTags.length === 0) && { color: COLORS.muted }]}>
                       VERIFY & SUBMIT
                     </Text>
                   </View>
@@ -328,12 +271,6 @@ const styles = StyleSheet.create({
   eligibilityTitle: { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10, letterSpacing: 2, marginBottom: 2 },
   eligibilityRow:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
   eligibilityText:  { color: COLORS.textSub, fontFamily: FONTS.body, fontSize: 12 },
-
-  categoryGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACING.sm },
-  categoryPill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.surfaceHigh, borderRadius: RADIUS.full, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border },
-  categoryPillActive: { borderColor: COLORS.yes, backgroundColor: COLORS.yesGlow },
-  categoryEmoji: { fontSize: 14 },
-  categoryLabel: { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 12 },
 
   disclaimer:   { color: COLORS.muted, fontFamily: FONTS.body, fontSize: 10, lineHeight: 16, textAlign: 'center', paddingHorizontal: SPACING.md },
 
