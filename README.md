@@ -1,4 +1,4 @@
-# TikTok Viral Prediction — Backend
+# TikTok Viral Prediction - Backend
 
 ## Project Structure
 ```
@@ -63,7 +63,7 @@ You won't pay anything meaningful in early testing.
 
 ## Endpoints
 
-All endpoints are Firebase Callable Functions — call them from the app with:
+All endpoints are Firebase Callable Functions - call them from the app with:
 ```js
 const functions = getFunctions();
 const fn = httpsCallable(functions, 'functionName');
@@ -118,8 +118,8 @@ const currentViews = response.data.data.videos[0].view_count;
 
 The backend enforces these rules to prevent bet counts from influencing decisions:
 
-1. **Feed endpoint** (`getFeed`) strips `yesBets`, `noBets`, `totalBets` — clients never see real numbers
+1. **Feed endpoint** (`getFeed`) strips `yesBets`, `noBets`, `totalBets` - clients never see real numbers
 2. **Noisy range** (`noisyBetRange`) is a deliberately vague string updated server-side with bucket noise
-3. **Resolved feed** (`getTrendingResolved`) only shows already-resolved videos — safe to show counts there
-4. **Bet history** is private per user via Firestore rules — no social graph possible
-5. **Resolution checks** happen server-side on a cron — clients can't trigger or observe them
+3. **Resolved feed** (`getTrendingResolved`) only shows already-resolved videos - safe to show counts there
+4. **Bet history** is private per user via Firestore rules - no social graph possible
+5. **Resolution checks** happen server-side on a cron - clients can't trigger or observe them
